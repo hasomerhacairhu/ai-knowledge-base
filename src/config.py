@@ -31,6 +31,13 @@ class Config:
     max_files_per_run: int
     additional_extensions: List[str]  # Non-Google Workspace file extensions (e.g., .pdf, .docx)
     
+    # Concurrency
+    processor_max_workers: int
+    indexer_max_workers: int
+    
+    # Database
+    database_path: str
+    
     # OCR
     ocr_agent: str | None
     
@@ -72,5 +79,8 @@ class Config:
             vector_store_id=required["VECTOR_STORE_ID"],
             max_files_per_run=int(os.getenv("MAX_FILES_PER_RUN", "10")),
             additional_extensions=extensions,
+            processor_max_workers=int(os.getenv("PROCESSOR_MAX_WORKERS", "5")),
+            indexer_max_workers=int(os.getenv("INDEXER_MAX_WORKERS", "3")),
+            database_path=os.getenv("DATABASE_PATH", "/app/data/pipeline.db"),
             ocr_agent=os.getenv("OCR_AGENT"),
         )

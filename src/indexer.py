@@ -1,27 +1,81 @@
 """OpenAI Vector Store indexer"""
 
 import json
-import io
+import time
 from datetime import datetime
 from typing import List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from openai import OpenAI
+from openai import OpenAI, RateLimitError, APIError
 from tqdm import tqdm
 
 from .config import Config
+from .database import Database, FileStatus
 from .utils import S3Client, setup_logging, ProgressTracker
 
 logger = setup_logging(__name__)
 
 
+def retry_with_exponential_backoff(
+    func,
+    max_retries: int = 5,
+    initial_delay: float = 1.0,
+    max_delay: float = 60.0,
+    backoff_factor: float = 2.0
+):
+    """
+    Retry a function with exponential backoff for rate limits
+    
+    Args:
+        func: Function to retry
+        max_retries: Maximum number of retry attempts
+        initial_delay: Initial delay in seconds
+        max_delay: Maximum delay in seconds
+        backoff_factor: Multiplier for delay after each retry
+    
+    Returns:
+        Result of func() if successful
+    
+    Raises:
+        Last exception if all retries exhausted
+    """
+    delay = initial_delay
+    last_exception = None
+    
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except RateLimitError as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                # Calculate delay with exponential backoff
+                wait_time = min(delay * (backoff_factor ** attempt), max_delay)
+                logger.warning(f"   Rate limit hit, retrying in {wait_time:.1f}s (attempt {attempt + 1}/{max_retries})...")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"   Rate limit: Max retries ({max_retries}) exhausted")
+                raise
+        except APIError as e:
+            last_exception = e
+            # Retry on 5xx server errors, but not on 4xx client errors
+            if 500 <= e.status_code < 600 and attempt < max_retries - 1:
+                wait_time = min(delay * (backoff_factor ** attempt), max_delay)
+                logger.warning(f"   API error {e.status_code}, retrying in {wait_time:.1f}s...")
+                time.sleep(wait_time)
+            else:
+                raise
+    
+    raise last_exception
+
+
 class VectorStoreIndexer:
     """Index processed text files into OpenAI Vector Store"""
     
-    def __init__(self, config: Config, dry_run: bool = False, max_workers: int = 3):
+    def __init__(self, config: Config, database: Database, dry_run: bool = False, max_workers: Optional[int] = None):
         self.config = config
+        self.database = database
         self.dry_run = dry_run
-        self.max_workers = max_workers
+        self.max_workers = max_workers or config.indexer_max_workers
         self.quiet_mode = False
         
         # Initialize S3 client with connection pooling
@@ -35,141 +89,50 @@ class VectorStoreIndexer:
         
         # Initialize OpenAI client
         self.openai_client = OpenAI(api_key=config.openai_api_key)
-        
-        # Track indexed files with hash-based sharding
-        self.indexed_marker_prefix = "indexed/"
-    
-    def mark_as_indexing(self, sha256: str):
-        """Mark a file as currently being indexed (temporary marker)"""
-        if self.dry_run:
-            return
-        
-        shard1 = sha256[:2]
-        marker_key = f"{self.indexed_marker_prefix}{shard1}/{sha256}.indexing"
-        marker_data = {
-            "sha256": sha256,
-            "started_at": str(datetime.now())
-        }
-        
-        self.s3.put_object(
-            marker_key,
-            json.dumps(marker_data, indent=2).encode('utf-8'),
-            content_type='application/json'
-        )
-    
-    def mark_as_indexed(self, sha256: str, file_id: str):
-        """Mark a file as successfully indexed (atomic rename from .indexing to .indexed)"""
-        if self.dry_run:
-            logger.info(f"   [DRY RUN] Would mark as indexed: {sha256}")
-            return
-        
-        shard1 = sha256[:2]
-        indexing_key = f"{self.indexed_marker_prefix}{shard1}/{sha256}.indexing"
-        indexed_key = f"{self.indexed_marker_prefix}{shard1}/{sha256}.indexed"
-        
-        marker_data = {
-            "sha256": sha256,
-            "openai_file_id": file_id,
-            "vector_store_id": self.config.vector_store_id,
-            "indexed_at": str(datetime.now())
-        }
-        
-        # Write the final .indexed marker
-        self.s3.put_object(
-            indexed_key,
-            json.dumps(marker_data, indent=2).encode('utf-8'),
-            content_type='application/json'
-        )
-        
-        # Clean up the temporary .indexing marker
-        try:
-            self.s3.delete_object(indexing_key)
-        except Exception:
-            pass  # Ignore if .indexing marker doesn't exist
     
     def list_unindexed_files(self, max_files: Optional[int] = None) -> List[Tuple[str, str, dict]]:
         """
         List processed text files that haven't been indexed yet
         
-        Performance: Uses set operations instead of per-file checks.
-        O(1) API calls instead of O(N) calls.
+        Uses database queries instead of S3 listing for O(1) lookups.
         
         Returns:
-            List of tuples: (text_key, sha256, metadata_dict)
+            List of tuples: (text_key, sha256, file_record_dict)
         """
-        logger.info(f"🔍 Scanning derivatives files in s3://{self.config.s3_bucket}/derivatives/")
+        logger.info(f"🔍 Querying database for files ready to index...")
         
         try:
-            # Step 1: Build set of SHA-256 hashes from indexed/ markers
-            logger.info("   📊 Listing indexed files...")
-            indexed_hashes = set()
-            indexing_hashes = set()  # Track files currently being indexed
+            # Query database for files with status=PROCESSED
+            files = self.database.get_files_for_indexing(limit=max_files)
             
-            for key in self.s3.list_objects(self.indexed_marker_prefix):
-                if key.endswith('.indexed'):
-                    # Extract SHA-256 from key: indexed/aa/sha256.indexed
-                    parts = key.split('/')
-                    if len(parts) >= 3:
-                        filename = parts[-1]  # sha256.indexed
-                        sha256 = filename.replace('.indexed', '')
-                        indexed_hashes.add(sha256)
-                elif key.endswith('.indexing'):
-                    # Extract SHA-256 from key: indexed/aa/sha256.indexing
-                    parts = key.split('/')
-                    if len(parts) >= 3:
-                        filename = parts[-1]  # sha256.indexing
-                        sha256 = filename.replace('.indexing', '')
-                        indexing_hashes.add(sha256)
+            logger.info(f"✅ Found {len(files)} unindexed files")
             
-            logger.info(f"   ✅ Found {len(indexed_hashes)} indexed files")
-            if indexing_hashes:
-                logger.info(f"   ⚠️  Found {len(indexing_hashes)} files with .indexing markers (may be stale)")
+            # Convert to expected format with text_key
+            result = []
+            for file in files:
+                sha256 = file["sha256"]
+                shard1 = sha256[:2]
+                shard2 = sha256[2:4]
+                text_key = f"derivatives/{shard1}/{shard2}/{sha256}/text.txt"
+                result.append((text_key, sha256, file))
             
-            # Step 2: List all derivatives and filter out indexed/indexing ones
-            logger.info("   � Scanning derivatives...")
-            unindexed = []
-            
-            for key in self.s3.list_objects('derivatives/'):
-                if not key.endswith('/meta.json'):
-                    continue
-                
-                # Load metadata to get SHA-256
-                try:
-                    meta_data, _ = self.s3.get_object(key)
-                    metadata = json.loads(meta_data.decode('utf-8'))
-                    sha256 = metadata.get('sha256')
-                    
-                    if not sha256:
-                        continue
-                    
-                    # Check if already indexed or currently being indexed (in-memory set lookup)
-                    if sha256 in indexed_hashes or sha256 in indexing_hashes:
-                        continue
-                    
-                    # Build text key from meta key
-                    # meta key: derivatives/aa/bb/sha256/meta.json
-                    # text key: derivatives/aa/bb/sha256/text.txt
-                    text_key = key.replace('/meta.json', '/text.txt')
-                    
-                    unindexed.append((text_key, sha256, metadata))
-                    
-                    if max_files and len(unindexed) >= max_files:
-                        break
-                        
-                except Exception as e:
-                    logger.warning(f"Could not load metadata from {key}: {e}")
-                    continue
+            return result
         
         except Exception as e:
-            logger.error(f"Error listing derivatives files: {e}")
+            logger.error(f"Error querying database: {e}")
             return []
-        
-        logger.info(f"✅ Found {len(unindexed)} unindexed files")
-        return unindexed
     
-    def index_file(self, text_key: str, sha256: str, metadata: dict) -> Optional[str]:
+    def index_file(self, text_key: str, sha256: str, file_record: dict) -> Optional[str]:
         """
-        Index a single text file to Vector Store
+        Index a single text file to Vector Store with atomic database updates
+        
+        Uses database for state management instead of S3 markers.
+        Implements retry logic with exponential backoff for rate limits.
+        
+        Args:
+            text_key: S3 key for text file
+            sha256: SHA-256 hash
+            file_record: Database file record
         
         Returns:
             OpenAI file ID if successful, None otherwise
@@ -179,72 +142,79 @@ class VectorStoreIndexer:
                 logger.info(msg)
         
         log(f"📄 Indexing: {sha256}")
-        log(f"   Original: {metadata.get('original_name', 'unknown')}")
+        log(f"   Original: {file_record.get('original_name', 'unknown')}")
         
         if self.dry_run:
             log(f"   [DRY RUN] Would upload to Vector Store: {self.config.vector_store_id}")
             return f"file-{sha256[:8]}-dryrun"
         
         try:
-            # Create temporary .indexing marker FIRST (prevents race condition)
-            log("   🔒 Creating indexing marker...")
-            self.mark_as_indexing(sha256)
-            
-            # Download text content
-            log("   📥 Downloading text...")
-            text_content, _ = self.s3.get_object(text_key)
-            
-            # Upload to OpenAI
-            log("   📤 Uploading to OpenAI...")
-            
-            # Create a file object
-            file_obj = io.BytesIO(text_content)
-            file_obj.name = f"{sha256}.txt"
-            
-            # Upload file
-            file_response = self.openai_client.files.create(
-                file=file_obj,
-                purpose='assistants'
+            # Mark as INDEXING in database (prevents race conditions)
+            log("   🔒 Marking as indexing in database...")
+            self.database.upsert_file(
+                sha256=sha256,
+                s3_key=file_record["s3_key"],
+                status=FileStatus.INDEXING
             )
             
+            # Download text content - STREAM for memory efficiency
+            log("   📥 Downloading text...")
+            text_stream, _ = self.s3.get_object_stream(text_key)
+            
+            # Upload to OpenAI with retry logic
+            log("   📤 Uploading to OpenAI...")
+            
+            # Wrap the streaming body as a file-like object with a name
+            # The boto3 StreamingBody is already a file-like object
+            text_stream.name = f"{sha256}.txt"
+            
+            # Upload file with exponential backoff
+            def upload_file():
+                return self.openai_client.files.create(
+                    file=text_stream,
+                    purpose='assistants'
+                )
+            
+            file_response = retry_with_exponential_backoff(upload_file)
             file_id = file_response.id
             log(f"   ✅ Uploaded file: {file_id}")
             
-            # Add to Vector Store
+            # Add to Vector Store with retry logic
             log(f"   📚 Adding to Vector Store: {self.config.vector_store_id}")
             
-            # Prepare metadata for Vector Store (minimal, avoid duplication)
-            vs_metadata = {
-                "sha256": sha256,
-                "source": "drive",
-                "extension": metadata.get('extension', ''),
-                "pipeline": "unstructured:auto"
-            }
+            def add_to_vector_store():
+                return self.openai_client.beta.vector_stores.files.create(
+                    vector_store_id=self.config.vector_store_id,
+                    file_id=file_id
+                )
             
-            self.openai_client.beta.vector_stores.files.create(
-                vector_store_id=self.config.vector_store_id,
-                file_id=file_id
-            )
-            
+            retry_with_exponential_backoff(add_to_vector_store)
             log("   ✅ Added to Vector Store")
             
-            # Mark as indexed (atomically replaces .indexing with .indexed)
-            self.mark_as_indexed(sha256, file_id)
+            # Mark as INDEXED in database (atomic operation)
+            self.database.upsert_file(
+                sha256=sha256,
+                s3_key=file_record["s3_key"],
+                status=FileStatus.INDEXED,
+                openai_file_id=file_id,
+                vector_store_id=self.config.vector_store_id
+            )
             
             return file_id
         
         except Exception as e:
             logger.error(f"   Error indexing file: {e}", exc_info=True)
             
-            # Clean up temporary .indexing marker on failure
+            # Mark as FAILED_INDEX in database
             if not self.dry_run:
-                try:
-                    shard1 = sha256[:2]
-                    indexing_key = f"{self.indexed_marker_prefix}{shard1}/{sha256}.indexing"
-                    self.s3.delete_object(indexing_key)
-                    logger.info(f"   🧹 Cleaned up .indexing marker")
-                except Exception:
-                    pass
+                self.database.upsert_file(
+                    sha256=sha256,
+                    s3_key=file_record["s3_key"],
+                    status=FileStatus.FAILED_INDEX,
+                    error_message=str(e),
+                    error_type=type(e).__name__
+                )
+                logger.info(f"   🗑️  Marked as failed in database")
             
             return None
     
@@ -271,16 +241,16 @@ class VectorStoreIndexer:
         logger.info(f"   Vector Store ID: {self.config.vector_store_id}")
         logger.info("="*80)
         
-        # List unindexed files
+        # List unindexed files from database
         files = self.list_unindexed_files(max_files=max_files)
         
         # Filter by SHA256 if specified (for full pipeline mode)
         if filter_sha256:
             filter_set = set(filter_sha256)
             filtered_files = []
-            for text_key, sha256, metadata in files:
+            for text_key, sha256, file_record in files:
                 if sha256 in filter_set:
-                    filtered_files.append((text_key, sha256, metadata))
+                    filtered_files.append((text_key, sha256, file_record))
             files = filtered_files
             logger.info(f"   Filtered to {len(files)} files from process stage")
         
@@ -299,8 +269,8 @@ class VectorStoreIndexer:
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 # Submit all tasks
                 future_to_file = {
-                    executor.submit(self.index_file, text_key, sha256, metadata): (text_key, sha256)
-                    for text_key, sha256, metadata in files
+                    executor.submit(self.index_file, text_key, sha256, file_record): (text_key, sha256)
+                    for text_key, sha256, file_record in files
                 }
                 
                 # Use tqdm for progress bar
@@ -322,8 +292,8 @@ class VectorStoreIndexer:
         else:
             # Sequential processing
             with tqdm(total=len(files), desc="📚 Indexing files", unit="file") as pbar:
-                for text_key, sha256, metadata in files:
-                    file_id = self.index_file(text_key, sha256, metadata)
+                for text_key, sha256, file_record in files:
+                    file_id = self.index_file(text_key, sha256, file_record)
                     tracker.update(success=bool(file_id))
                     
                     if file_id:

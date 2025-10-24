@@ -81,7 +81,10 @@ class S3Client:
     
     def get_object(self, key: str) -> tuple[bytes, dict]:
         """
-        Get object data and metadata
+        Get object data and metadata (loads entire file into memory)
+        
+        WARNING: This loads the entire file into memory. For large files,
+        use get_object_stream() instead to stream the data.
         
         Returns:
             Tuple of (data, metadata)
@@ -90,6 +93,30 @@ class S3Client:
         data = response['Body'].read()
         metadata = response.get('Metadata', {})
         return data, metadata
+    
+    def get_object_stream(self, key: str):
+        """
+        Get object as a streaming file-like object (memory-efficient)
+        
+        Use this for large files to avoid loading entire file into memory.
+        The returned Body is a file-like object that can be read in chunks
+        or passed directly to other APIs.
+        
+        Returns:
+            Tuple of (streaming_body, metadata)
+            - streaming_body: botocore.response.StreamingBody (file-like object)
+            - metadata: dict of S3 metadata
+        
+        Example:
+            stream, metadata = s3.get_object_stream('path/to/large/file.pdf')
+            with open('local_file.pdf', 'wb') as f:
+                for chunk in stream.iter_chunks(chunk_size=8192):
+                    f.write(chunk)
+        """
+        response = self.client.get_object(Bucket=self.bucket, Key=key)
+        streaming_body = response['Body']
+        metadata = response.get('Metadata', {})
+        return streaming_body, metadata
     
     def get_object_metadata(self, key: str) -> tuple[dict, dict]:
         """

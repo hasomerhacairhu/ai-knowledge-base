@@ -7,8 +7,10 @@ services:
     env_file:
       - .env.docker
     volumes:
-      # Mount service account JSON
-      - ./somer-services-458421-ee757e0c4238.json:/app/somer-services-458421-ee757e0c4238.json:ro
+      # Mount service account JSON (use environment variable for path)
+      - ${GOOGLE_SERVICE_ACCOUNT_FILE:-./ service-account.json}:/app/service-account.json:ro
+      # Mount database for persistence
+      - ./data:/app/data
     command: uv run python main.py --max-files 5
     restart: unless-stopped
     

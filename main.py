@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.config import Config
+from src.database import Database
 from src.drive_sync import DriveSync
 from src.processor import UnstructuredProcessor
 from src.indexer import VectorStoreIndexer
@@ -56,9 +57,9 @@ Examples:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["sync", "process", "index", "full"],
+        choices=["sync", "process", "index", "full", "migrate", "stats", "cleanup"],
         default="full",
-        help="Command to run: sync (Drive→S3), process (S3→Unstructured), index (→Vector Store), full (all). Default: full"
+        help="Command to run: sync (Drive→S3), process (S3→Unstructured), index (→Vector Store), full (all), migrate (S3→Database), stats (show statistics), cleanup (clean stale files). Default: full"
     )
     
     parser.add_argument(
@@ -87,9 +88,28 @@ Examples:
     )
     
     parser.add_argument(
+        "--processor-workers",
+        type=int,
+        help=f"Number of parallel workers for processing (default from .env: {config.processor_max_workers})"
+    )
+    
+    parser.add_argument(
+        "--indexer-workers",
+        type=int,
+        help=f"Number of parallel workers for indexing (default from .env: {config.indexer_max_workers})"
+    )
+    
+    parser.add_argument(
         "--use-processes",
         action="store_true",
         help="Use ProcessPoolExecutor for CPU-bound tasks (better for OCR-heavy workloads)"
+    )
+    
+    parser.add_argument(
+        "--max-stale-hours",
+        type=int,
+        default=24,
+        help="Maximum hours before considering files stale (default: 24)"
     )
     
     args = parser.parse_args()
@@ -98,10 +118,78 @@ Examples:
         # Apply max_files from CLI (already has correct default from config)
         config.max_files_per_run = args.max_files
         
+        # Apply worker overrides from CLI
+        if args.processor_workers:
+            config.processor_max_workers = args.processor_workers
+        if args.indexer_workers:
+            config.indexer_max_workers = args.indexer_workers
+        
+        # Initialize database
+        database = Database(config.database_path)
+        
+        # Handle special commands
+        if args.command == "migrate":
+            print("\n" + "="*80)
+            print("🔄 MIGRATING S3 STATE TO DATABASE")
+            print("="*80)
+            
+            # Initialize S3 client
+            from src.utils import S3Client
+            s3_client = S3Client(
+                endpoint=config.s3_endpoint,
+                access_key=config.s3_access_key,
+                secret_key=config.s3_secret_key,
+                bucket=config.s3_bucket,
+                region=config.s3_region
+            )
+            
+            synced, processed, indexed = database.migrate_from_s3_markers(
+                s3_client, 
+                config.s3_bucket,
+                dry_run=args.dry_run
+            )
+            
+            print("="*80)
+            print(f"✅ Migration complete: {synced} synced, {processed} processed, {indexed} indexed")
+            print("="*80 + "\n")
+            return
+        
+        if args.command == "stats":
+            print("\n" + "="*80)
+            print("📊 PIPELINE STATISTICS")
+            print("="*80)
+            
+            stats = database.get_statistics()
+            print(f"\n📁 Total files: {stats['total']}")
+            print(f"\n📥 Synced: {stats['synced']}")
+            print(f"🔄 Processing: {stats['processing']}")
+            print(f"✅ Processed: {stats['processed']}")
+            print(f"📚 Indexing: {stats['indexing']}")
+            print(f"✨ Indexed: {stats['indexed']}")
+            print(f"\n❌ Failed:")
+            print(f"   - Sync: {stats['failed_sync']}")
+            print(f"   - Process: {stats['failed_process']}")
+            print(f"   - Index: {stats['failed_index']}")
+            print(f"\n⚠️  Files with errors: {stats['with_errors']}")
+            
+            print("="*80 + "\n")
+            return
+        
+        if args.command == "cleanup":
+            print("\n" + "="*80)
+            print("🧹 CLEANING UP STALE FILES")
+            print("="*80)
+            
+            stale_count = database.mark_stale_as_failed(max_age_hours=args.max_stale_hours)
+            
+            print(f"✅ Marked {stale_count} stale files as failed")
+            print("="*80 + "\n")
+            return
+        
         # Initialize components
-        drive_sync = DriveSync(config, dry_run=args.dry_run)
-        processor = UnstructuredProcessor(config, dry_run=args.dry_run, use_processes=args.use_processes)
-        indexer = VectorStoreIndexer(config, dry_run=args.dry_run)
+        drive_sync = DriveSync(config, database, dry_run=args.dry_run)
+        processor = UnstructuredProcessor(config, database, dry_run=args.dry_run, use_processes=args.use_processes)
+        indexer = VectorStoreIndexer(config, database, dry_run=args.dry_run)
         
         print("\n" + "="*80)
         print("🚀 AI KNOWLEDGE BASE INGEST PIPELINE")
@@ -120,31 +208,49 @@ Examples:
                 force_full=args.force_full_sync
             )
             print(f"\n✅ Sync: {success} successful, {failed} failed\n")
+            # NOTE: synced_hashes is intentionally not passed to the next stage.
+            # This is part of a "self-healing" design where each pipeline stage
+            # processes ALL pending files (not just newly synced ones). This ensures
+            # that files which failed in previous runs are automatically retried.
         else:
             synced_hashes = []
         
         if args.command == "process" or args.command == "full":
             print("\n🔄 STAGE 2: Unstructured Processing")
             print("-" * 80)
-            # In full mode, only process files that were just synced
-            filter_hashes = synced_hashes if args.command == "full" else None
-            success, failed, processed_hashes = processor.process_batch(
-                max_files=config.max_files_per_run,
-                retry_failed=args.retry_failed,
-                filter_sha256=filter_hashes
-            )
+            # In full mode, process ALL pending files (including failed ones) for self-healing
+            # This ensures files that failed in previous runs are automatically retried
+            if args.command == "full":
+                # Process all SYNCED files (including newly synced and any orphaned from previous runs)
+                # Also retry any FAILED_PROCESS files automatically
+                success, failed, processed_hashes = processor.process_batch(
+                    max_files=config.max_files_per_run,
+                    retry_failed=True,  # Auto-retry failed files in full mode
+                    filter_sha256=None  # Process all pending, not just newly synced (self-healing)
+                )
+            else:
+                # In standalone process mode, respect the --retry-failed flag
+                success, failed, processed_hashes = processor.process_batch(
+                    max_files=config.max_files_per_run,
+                    retry_failed=args.retry_failed,
+                    filter_sha256=None
+                )
             print(f"\n✅ Process: {success} successful, {failed} failed\n")
+            # NOTE: processed_hashes is intentionally not passed to the next stage.
+            # This is part of a "self-healing" design where each pipeline stage
+            # processes ALL pending files (not just newly processed ones). This ensures
+            # that files which were processed but failed indexing are automatically retried.
         else:
             processed_hashes = []
         
         if args.command == "index" or args.command == "full":
             print("\n📚 STAGE 3: Vector Store Indexing")
             print("-" * 80)
-            # In full mode, only index files that were just processed
-            filter_hashes = processed_hashes if args.command == "full" else None
+            # In full mode, index ALL processed files (not just newly processed ones)
+            # This ensures files that were processed but failed indexing are automatically retried
             success, failed = indexer.index_batch(
                 max_files=config.max_files_per_run,
-                filter_sha256=filter_hashes
+                filter_sha256=None  # Index all pending, for self-healing behavior
             )
             print(f"\n✅ Index: {success} successful, {failed} failed\n")
         
