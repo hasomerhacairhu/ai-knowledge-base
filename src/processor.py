@@ -3,11 +3,14 @@
 import hashlib
 import json
 import os
+import warnings
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from io import StringIO
 
 from tqdm import tqdm
 from unstructured.partition.auto import partition
@@ -16,44 +19,279 @@ from .config import Config
 from .database import Database, FileStatus
 from .utils import S3Client, setup_logging, ProgressTracker
 
+# Suppress deprecation warnings from unstructured library
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', message='.*max_size.*deprecated.*')
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', message='.*No languages specified.*')
+
+# Set Tesseract as the OCR agent (default would be PaddleOCR if available)
+os.environ["OCR_AGENT"] = "unstructured.partition.utils.ocr_models.tesseract_ocr.OCRAgentTesseract"
+
+# Suppress Tesseract warnings
+os.environ["TESSDATA_PREFIX"] = os.environ.get("TESSDATA_PREFIX", "/opt/homebrew/share/tessdata/")
+os.environ["OMP_THREAD_LIMIT"] = "1"  # Reduce Tesseract thread spam
+
+# AGGRESSIVE: Monkey patch the print statement in unstructured.partition.pdf
+# that outputs "Warning: No languages specified, defaulting to English."
+import builtins
+_original_print = builtins.print
+def _filtered_print(*args, **kwargs):
+    """Filter out the annoying language warning from unstructured"""
+    msg = ' '.join(str(arg) for arg in args)
+    if 'No languages specified' not in msg and 'defaulting to English' not in msg:
+        _original_print(*args, **kwargs)
+builtins.print = _filtered_print
+
 logger = setup_logging(__name__)
 
 
-def _get_language_hint(s3_key: str) -> List[str]:
+class DeprecationWarningFilter:
+    """Filter to suppress deprecation warnings and other noise in stderr"""
+    def __init__(self, stream):
+        self.stream = stream
+        self._suppress = [
+            'deprecated', 
+            'max_size', 
+            'backward compatibility', 
+            'deprecation',
+            'no languages specified',
+            'defaulting to english'
+        ]
+    
+    def write(self, text):
+        # Only write if text doesn't contain suppressed keywords
+        if not any(keyword in text.lower() for keyword in self._suppress):
+            self.stream.write(text)
+    
+    def flush(self):
+        self.stream.flush()
+    
+    def fileno(self):
+        return self.stream.fileno() if hasattr(self.stream, 'fileno') else None
+
+
+def _get_language_hint(s3_key: str) -> str:
     """
-    Detect language hint from filename for OCR optimization.
+    Detect language hint from filename for OCR optimization (Tesseract).
     
     Checks for manual language codes in the filename (e.g., document_hun.pdf, report_pol_2025.pdf).
-    If no manual hint is found, returns ["auto"] to enable unstructured's built-in auto-detection.
+    If no manual hint is found, returns "eng+hun" for English+Hungarian multilingual recognition.
     
-    Supported manual hints:
-    - _hun: Hungarian
-    - _eng: English
-    - _ces: Czech
-    - _slk: Slovak
-    - _pol: Polish
+    Tesseract language codes (3-letter ISO 639-2):
+    - eng: English
+    - hun: Hungarian (magyar)
+    - ces: Czech
+    - slk: Slovak
+    - pol: Polish
+    - deu: German
+    - fra: French
+    - spa: Spanish
+    - ita: Italian
+    - ron: Romanian
+    - Multiple languages: Use + separator (e.g., "eng+hun+ces")
     
     Args:
         s3_key: S3 object key (filename)
     
     Returns:
-        List of language codes for Tesseract OCR, or ["auto"] for auto-detection
+        Language code string for Tesseract (e.g., "eng+hun")
     """
     import re
     
     s3_key_lower = s3_key.lower()
     
+    # Map common filename language hints to Tesseract 3-letter codes
+    # Tesseract uses ISO 639-2 codes
+    lang_map = {
+        'hun': 'hun',  # Hungarian
+        'magyar': 'hun',  # Hungarian native name
+        'eng': 'eng',  # English
+        'english': 'eng',
+        'ces': 'ces',  # Czech
+        'czech': 'ces',
+        'slk': 'slk',  # Slovak
+        'slovak': 'slk',
+        'pol': 'pol',  # Polish
+        'polish': 'pol',
+        'deu': 'deu',  # German
+        'german': 'deu',
+        'fra': 'fra',  # French
+        'french': 'fra',
+        'spa': 'spa',  # Spanish
+        'spanish': 'spa',
+        'ita': 'ita',  # Italian
+        'italian': 'ita',
+        'ron': 'ron',  # Romanian
+        'romanian': 'ron',
+    }
+    
     # Check for explicit language hints in filename using robust regex
-    # Match language codes surrounded by underscores, dashes, or at word boundaries
-    # Handles: document_hun.pdf, file-eng-final.pdf, report_HUN_2025.pdf, etc.
-    pattern = r'[_\-](' + '|'.join(['hun', 'eng', 'ces', 'slk', 'pol']) + r')[_\-\.]'
+    pattern = r'[_\-](' + '|'.join(lang_map.keys()) + r')[_\-\.]'
     match = re.search(pattern, s3_key_lower)
     
     if match:
-        return [match.group(1)]  # Manual hint found, use it
+        detected_code = match.group(1)
+        tesseract_lang = lang_map[detected_code]
+        return tesseract_lang
     
-    # No manual hint found - enable unstructured's auto-detection
-    return ["auto"]
+    # No manual hint found - use English+Hungarian as default
+    # Tesseract supports multiple languages simultaneously with + separator
+    return "eng+hun"
+
+
+def _partition_in_process(args_tuple: tuple) -> List:
+    """
+    Worker function to partition documents in a separate process.
+    Must be at module level for pickling.
+    
+    Args:
+        args_tuple: Tuple of (path, extension, lang) to avoid pickling issues
+    
+    Returns:
+        List of document elements
+    """
+    path, extension, lang = args_tuple
+    
+    import os
+    import sys
+    import warnings
+    
+    # Set Tesseract as the OCR agent in worker process
+    os.environ["OCR_AGENT"] = "unstructured.partition.utils.ocr_models.tesseract_ocr.OCRAgentTesseract"
+    
+    # Suppress warnings in worker
+    warnings.filterwarnings('ignore')
+    
+    # Suppress stderr output (warnings that bypass Python warnings system)
+    class StderrFilter:
+        def __init__(self, stream):
+            self.stream = stream
+            self._suppress = ['no languages specified', 'defaulting to english', 'warning:']
+        def write(self, text):
+            if not any(keyword in text.lower() for keyword in self._suppress):
+                self.stream.write(text)
+        def flush(self):
+            self.stream.flush()
+    
+    old_stderr = sys.stderr
+    sys.stderr = StderrFilter(old_stderr)
+    
+    try:
+        # Import after env is set
+        from unstructured.partition.auto import partition
+        from unstructured.partition.pdf import partition_pdf
+        
+        if extension == '.pdf':
+            # Use smart PDF partitioning (fast → OCR fallback)
+            fast_elements = partition_pdf(path, strategy="fast", include_page_breaks=True)
+            total_chars = sum(len(getattr(e, "text", "") or "") for e in fast_elements)
+            pages = 1 + sum(1 for e in fast_elements if getattr(e, "category", "") == "PageBreak")
+            
+            if total_chars >= 200 * max(1, pages):
+                return fast_elements
+            
+            # Fallback to OCR with Tesseract
+            # Tesseract supports multiple languages (e.g., "eng+hun" for English+Hungarian)
+            return partition_pdf(
+                path,
+                strategy="ocr_only",
+                languages=[lang],  # Tesseract language codes (e.g., "eng+hun")
+                include_page_breaks=True
+            )
+        else:
+            # Non-PDF files use standard partitioning
+            return partition(filename=path)
+    finally:
+        sys.stderr = old_stderr
+
+
+def _partition_pdf_smart(tmp_path: str, language: str, min_chars_per_page: int = 200):
+    """
+    Smart PDF partitioning: fast text extraction with OCR fallback.
+    
+    Strategy:
+    1. Try fast extraction first (cheap, no OCR)
+    2. If text density is low, fallback to OCR with Tesseract
+    3. Never use hi_res (too slow, unnecessary for most documents)
+    
+    Args:
+        tmp_path: Path to PDF file
+        language: Language code for OCR (e.g., "eng+hun", "eng")
+        min_chars_per_page: Minimum characters per page to consider "good" extraction
+    
+    Returns:
+        List of document elements
+    """
+    from unstructured.partition.pdf import partition_pdf
+    
+    # Suppress stderr during partitioning
+    old_stderr = sys.stderr
+    sys.stderr = DeprecationWarningFilter(old_stderr)
+    
+    try:
+        # 1) Fast text extraction (no OCR)
+        fast_elements = partition_pdf(
+            tmp_path, 
+            strategy="fast",
+            include_page_breaks=True
+        )
+        
+        # Calculate text density
+        total_chars = sum(len(getattr(e, "text", "") or "") for e in fast_elements)
+        pages = 1 + sum(1 for e in fast_elements if getattr(e, "category", "") == "PageBreak")
+        chars_per_page = total_chars / max(1, pages)
+        
+        # If enough real text, use fast result
+        if chars_per_page >= min_chars_per_page:
+            return fast_elements
+        
+        # 2) Low text density - fallback to OCR with Tesseract
+        # Tesseract supports multiple languages with + separator (e.g., "eng+hun")
+        ocr_elements = partition_pdf(
+            tmp_path,
+            strategy="ocr_only",  # Pure OCR using Tesseract
+            languages=[language],  # Tesseract language codes (e.g., ["eng+hun"])
+            include_page_breaks=True
+        )
+        
+        return ocr_elements
+        
+    finally:
+        sys.stderr = old_stderr
+
+
+def _process_with_timeout(tmp_path: str, ext: str, language: str, timeout: int = 90) -> List:
+    """
+    Process document with hard timeout using ProcessPoolExecutor.
+    Ensures that hung Tesseract/OCR processes are terminated.
+    
+    Args:
+        tmp_path: Path to temporary file
+        ext: File extension
+        language: Language code for OCR (e.g., "eng+hun", "eng")
+        timeout: Timeout in seconds (default: 90s for OCR, 20s for others)
+    
+    Returns:
+        List of document elements
+    
+    Raises:
+        TimeoutError: If processing exceeds timeout
+    """
+    from concurrent.futures import ProcessPoolExecutor, TimeoutError as FutureTimeoutError
+    
+    # Adjust timeout based on file type
+    actual_timeout = timeout if ext == '.pdf' else 30
+    
+    with ProcessPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_partition_in_process, (tmp_path, ext, language))
+        try:
+            return future.result(timeout=actual_timeout)
+        except FutureTimeoutError:
+            # Cancel the future and shutdown executor forcefully
+            future.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise TimeoutError(f"Processing exceeded {actual_timeout}s timeout - file may be corrupted or too complex")
 
 
 def _process_single_file(
@@ -135,21 +373,52 @@ def _process_single_file(
             # Get original name from metadata
             original_name = object_metadata.get('original-name', Path(s3_key).name)
             
-            # Process with Unstructured
+            # Process with Unstructured (fast → OCR fallback strategy)
             log("   🔄 Processing with Unstructured...")
             
-            # Detect language from filename - supports manual hints or auto-detection
-            languages = _get_language_hint(s3_key)
+            # Detect language from filename
+            language = _get_language_hint(s3_key)
             
-            # For PDFs, use strategy="auto" with language support
+            # Process based on file type with timeout protection
             if ext == '.pdf':
+                # PDF: Use fast → OCR fallback WITH TIMEOUT
+                from unstructured.partition.pdf import partition_pdf
+                
+                # Suppress stderr warnings during PDF processing
+                old_stderr = sys.stderr
+                sys.stderr = DeprecationWarningFilter(old_stderr)
+                
                 try:
-                    elements = partition(filename=tmp_path, strategy="auto", languages=languages)
-                except Exception as e:
-                    log(f"   Auto strategy failed, trying hi_res: {e}")
-                    elements = partition(filename=tmp_path, strategy="hi_res", languages=languages)
+                    # 1) Try fast extraction first (no OCR) - usually quick
+                    fast_elements = partition_pdf(tmp_path, strategy="fast", include_page_breaks=True)
+                    total_chars = sum(len(getattr(e, "text", "") or "") for e in fast_elements)
+                    pages = 1 + sum(1 for e in fast_elements if getattr(e, "category", "") == "PageBreak")
+                    chars_per_page = total_chars / max(1, pages)
+                    
+                    if chars_per_page >= 200:
+                        # Good text density - use fast result
+                        elements = fast_elements
+                        log(f"   ✅ Fast extraction: {total_chars} chars, {pages} pages")
+                    else:
+                        # Low text density - fallback to OCR WITH TIMEOUT
+                        log(f"   ⚠️  Low text density ({chars_per_page:.0f} chars/page), using OCR...")
+                        
+                        # Use timeout protection for OCR (Tesseract can hang)
+                        try:
+                            elements = _process_with_timeout(tmp_path, ext, language, timeout=120)
+                            log(f"   ✅ OCR completed successfully")
+                        except TimeoutError as te:
+                            log(f"   ⚠️  OCR timeout after 120s, falling back to fast extraction")
+                            elements = fast_elements  # Use fast extraction even if sparse
+                finally:
+                    sys.stderr = old_stderr
             else:
-                elements = partition(filename=tmp_path)
+                # Non-PDF: Standard partitioning with timeout
+                try:
+                    elements = _process_with_timeout(tmp_path, ext, language, timeout=60)
+                except TimeoutError:
+                    log(f"   ⚠️  Processing timeout after 60s")
+                    raise  # Re-raise to mark as failed
             
             log(f"   ✅ Extracted {len(elements)} elements")
             
@@ -259,7 +528,16 @@ def _process_file_worker(sha256: str, s3_key: str, config: Config, db_path: str,
 
 
 class UnstructuredProcessor:
-    """Process documents using Unstructured.io"""
+    """
+    Process documents using Unstructured.io
+    
+    Features:
+    - Memory-efficient streaming downloads from S3
+    - Fast text extraction with OCR fallback for PDFs
+    - Timeout protection (120s for OCR, 60s for other files)
+    - Parallel processing with ThreadPoolExecutor (default: 5 workers)
+    - Automatic cleanup of temp files and hung processes
+    """
     
     def __init__(self, config: Config, database: Database, dry_run: bool = False, max_workers: Optional[int] = None, use_processes: bool = False):
         self.config = config
@@ -268,6 +546,8 @@ class UnstructuredProcessor:
         self.max_workers = max_workers or config.processor_max_workers
         self.use_processes = use_processes  # Use ProcessPoolExecutor for CPU-bound tasks
         self.quiet_mode = False  # Set to True to suppress per-file logging in parallel mode
+        
+        logger.info(f"🔧 Processor initialized: {self.max_workers} workers, timeout protection enabled")
         
         # Initialize S3 client with connection pooling
         self.s3 = S3Client(
@@ -301,11 +581,25 @@ class UnstructuredProcessor:
         
         try:
             if retry_failed:
-                # Get files with FAILED_PROCESS status
-                files = self.database.get_files_by_status(FileStatus.FAILED_PROCESS, limit=max_files)
-                logger.info(f"✅ Found {len(files)} failed files to retry")
+                # Get BOTH synced files AND failed files for retry
+                synced_files = self.database.get_files_for_processing(limit=max_files)
+                failed_files = self.database.get_files_by_status(FileStatus.FAILED_PROCESS, limit=max_files)
+                
+                # Combine and deduplicate by SHA256
+                seen_sha256 = set()
+                files = []
+                for file in synced_files + failed_files:
+                    if file["sha256"] not in seen_sha256:
+                        files.append(file)
+                        seen_sha256.add(file["sha256"])
+                
+                # Apply limit after combining
+                if max_files and len(files) > max_files:
+                    files = files[:max_files]
+                
+                logger.info(f"✅ Found {len(synced_files)} unprocessed files and {len(failed_files)} failed files to retry (total: {len(files)})")
             else:
-                # Get files with SYNCED status
+                # Get files with SYNCED status only
                 files = self.database.get_files_for_processing(limit=max_files)
                 logger.info(f"✅ Found {len(files)} unprocessed files")
             
@@ -372,6 +666,9 @@ class UnstructuredProcessor:
         Returns:
             Tuple of (successful_count, failed_count, list_of_processed_sha256_hashes)
         """
+        # Install global stderr filter to suppress deprecation warnings
+        sys.stderr = DeprecationWarningFilter(sys.__stderr__)
+        
         logger.info("="*80)
         logger.info("🔄 Starting Unstructured Processing")
         if self.dry_run:
@@ -430,43 +727,56 @@ class UnstructuredProcessor:
                         for s3_key, sha256 in files
                     }
                 
-                # Use tqdm for progress bar
-                with tqdm(total=len(files), desc="🔄 Processing files", unit="file") as pbar:
-                    for future in as_completed(future_to_key):
-                        s3_key, sha256 = future_to_key[future]
-                        try:
-                            result_sha256 = future.result()
-                            tracker.update(success=bool(result_sha256))
-                            if result_sha256:
-                                processed_sha256_hashes.append(result_sha256)
-                        except Exception as e:
-                            logger.error(f"   ❌ Error processing {s3_key}: {e}")
-                            tracker.update(success=False)
-                        
-                        skipped = tracker.successful - (tracker.current - tracker.failed)
-                        pbar.set_postfix_str(f"✅ {tracker.successful} | ❌ {tracker.failed}")
-                        pbar.update(1)
+                # Use tqdm for progress bar - write to stdout, suppress stderr completely
+                import contextlib
+                with open(os.devnull, 'w') as stderr_devnull:
+                    with contextlib.redirect_stderr(stderr_devnull):
+                        with tqdm(total=len(files), desc="🔄 Processing files", unit="file", 
+                                  leave=True, dynamic_ncols=True, file=sys.stdout) as pbar:
+                            for future in as_completed(future_to_key):
+                                s3_key, sha256 = future_to_key[future]
+                                try:
+                                    result_sha256 = future.result()
+                                    tracker.update(success=bool(result_sha256))
+                                    if result_sha256:
+                                        processed_sha256_hashes.append(result_sha256)
+                                except Exception as e:
+                                    tqdm.write(f"ERROR: {s3_key}: {e}")
+                                    tracker.update(success=False)
+                                
+                                pbar.set_postfix_str(f"✅ {tracker.successful} | ❌ {tracker.failed}")
+                                pbar.update(1)
             
             # Restore normal logging
             self.quiet_mode = False
         else:
             # Sequential processing
-            with tqdm(total=len(files), desc="🔄 Processing files", unit="file") as pbar:
-                for s3_key, sha256 in files:
-                    result_sha256 = self.process_file(s3_key, sha256)
-                    tracker.update(success=bool(result_sha256))
-                    
-                    if result_sha256:
-                        processed_sha256_hashes.append(result_sha256)
-                        pbar.set_postfix_str(f"✅ {tracker.successful} | ❌ {tracker.failed}")
-                    else:
-                        pbar.set_postfix_str(f"✅ {tracker.successful} | ❌ {tracker.failed}")
-                    
-                    pbar.update(1)
+            import contextlib
+            with open(os.devnull, 'w') as stderr_devnull:
+                with contextlib.redirect_stderr(stderr_devnull):
+                    with tqdm(total=len(files), desc="🔄 Processing files", unit="file",
+                              leave=True, dynamic_ncols=True, file=sys.stdout) as pbar:
+                        for s3_key, sha256 in files:
+                            result_sha256 = self.process_file(s3_key, sha256)
+                            tracker.update(success=bool(result_sha256))
+                            
+                            if result_sha256:
+                                processed_sha256_hashes.append(result_sha256)
+                            
+                            pbar.set_postfix_str(f"✅ {tracker.successful} | ❌ {tracker.failed}")
+                            pbar.update(1)
+        
+        # Ensure all logging handlers are flushed before attempting to log
+        # This prevents "I/O operation on closed file" errors
+        for handler in logger.handlers:
+            try:
+                handler.flush()
+            except:
+                pass
         
         # Summary
-        logger.info("\n" + "="*80)
-        logger.info(f"✅ Processing complete: {tracker.successful} successful, {tracker.failed} failed")
-        logger.info("="*80)
+        print("\n" + "="*80)
+        print(f"✅ Processing complete: {tracker.successful} successful, {tracker.failed} failed")
+        print("="*80)
         
         return tracker.successful, tracker.failed, processed_sha256_hashes

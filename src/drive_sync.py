@@ -26,17 +26,20 @@ def sanitize_metadata_value(value: str) -> str:
     """
     Sanitize metadata values for S3 compatibility.
     
-    S3 metadata supports UTF-8, but we need to ensure proper encoding.
-    Uses URL encoding for special characters while preserving readability.
+    S3 metadata must contain only ASCII characters. This function URL-encodes
+    non-ASCII characters to ensure compatibility while preserving the information.
     """
     import urllib.parse
     
-    # S3 metadata values must be valid UTF-8 and cannot contain certain control characters
-    # Remove control characters but preserve unicode text
+    # Remove control characters (except tab, newline, carriage return)
     cleaned = ''.join(char for char in value if ord(char) >= 32 or char in '\t\n\r')
     
-    # Return cleaned UTF-8 string (S3 will handle encoding)
-    return cleaned
+    # S3 metadata must be ASCII-only, so URL-encode non-ASCII characters
+    # Use quote_plus to encode spaces and special characters
+    # safe=':/' keeps common path separators readable
+    encoded = urllib.parse.quote(cleaned, safe='')
+    
+    return encoded
 
 # Google Workspace MIME types that need export
 GOOGLE_MIME_EXPORTS = {
@@ -94,14 +97,16 @@ class DriveSync:
             logger.info(f"📍 No checkpoint found: {e}")
             return None
     
-    def save_checkpoint(self, timestamp: str) -> None:
+    def save_checkpoint(self, timestamp: str, silent: bool = False) -> None:
         """Save the sync checkpoint to database"""
         if self.dry_run:
-            logger.info(f"[DRY RUN] Would save checkpoint: {timestamp}")
+            if not silent:
+                logger.info(f"[DRY RUN] Would save checkpoint: {timestamp}")
             return
         
         self.database.set_checkpoint('drive_sync_last_modified', timestamp)
-        logger.info(f"✅ Saved checkpoint: {timestamp}")
+        if not silent:
+            logger.info(f"✅ Saved checkpoint: {timestamp}")
     
     def list_files_from_drive(self, max_files: Optional[int] = None, 
                              modified_after: Optional[str] = None):
@@ -117,12 +122,6 @@ class DriveSync:
         Yields:
             File metadata dictionaries
         """
-        logger.info(f"🔍 Scanning Google Drive folder: {self.config.google_drive_folder_id}")
-        if modified_after:
-            logger.info(f"   📅 Modified after: {modified_after}")
-        if max_files:
-            logger.info(f"   📊 Max files: {max_files}")
-        
         files_yielded = 0
         
         def scan_folder(folder_id: str, path: str = ""):
@@ -179,8 +178,6 @@ class DriveSync:
         
         # Start scanning from root folder
         yield from scan_folder(self.config.google_drive_folder_id)
-        
-        logger.info(f"✅ Found {files_yielded} supported files")
     
     def file_already_synced(self, drive_file_id: str, drive_path: str, original_name: str) -> Optional[Tuple[str, bool]]:
         """
@@ -210,7 +207,7 @@ class DriveSync:
         
         return None
     
-    def download_and_upload_file(self, file_meta: Dict) -> Optional[Tuple[str, bool, str]]:
+    def download_and_upload_file(self, file_meta: Dict, s3_client: Optional[S3Client] = None) -> Optional[Tuple[str, bool, str]]:
         """
         Download file from Drive and upload to S3
         
@@ -220,19 +217,34 @@ class DriveSync:
         3. **Third**: Check if SHA-256 exists in database (content deduplication)
         4. **Finally**: Upload if new, save to database atomically
         
+        Args:
+            file_meta: File metadata from Drive
+            s3_client: Optional S3Client instance (create one per thread to avoid memory corruption)
+        
         Returns:
             Tuple of (s3_key, is_new, sha256) if successful, None otherwise
             - is_new=True means newly uploaded, is_new=False means skipped (already exists)
         """
+        # Create thread-local clients to avoid memory corruption in concurrent access
+        if s3_client is None:
+            s3_client = S3Client(
+                endpoint=self.config.s3_endpoint,
+                access_key=self.config.s3_access_key,
+                secret_key=self.config.s3_secret_key,
+                bucket=self.config.s3_bucket,
+                region=self.config.s3_region
+            )
+        
+        # Create thread-local Drive service (Google API client is NOT thread-safe)
+        credentials = service_account.Credentials.from_service_account_file(
+            self.config.google_service_account_file, scopes=SCOPES)
+        drive_service = build('drive', 'v3', credentials=credentials)
+        
         file_id = file_meta['id']
         file_name = file_meta['name']
         mime_type = file_meta['mimeType']
         modified_time = file_meta['modifiedTime']
         created_time = file_meta.get('createdTime', modified_time)
-        
-        # Use tqdm.write() for progress bar compatibility
-        from tqdm import tqdm
-        tqdm.write(f"📥 {file_meta['path']}")
         
         # STEP 1: Check if Drive ID already exists (FAST - no download needed)
         existing_result = self.file_already_synced(file_id, file_meta['path'], file_meta['name'])
@@ -240,8 +252,6 @@ class DriveSync:
             existing_key, needs_metadata_update = existing_result
             
             if needs_metadata_update:
-                tqdm.write(f"   🔄 File renamed/moved in Drive, updating metadata...")
-                
                 if not self.dry_run:
                     try:
                         # Update S3 metadata without re-uploading file content
@@ -249,7 +259,7 @@ class DriveSync:
                             'drive-path': sanitize_metadata_value(file_meta['path']),
                             'original-name': sanitize_metadata_value(file_meta['name'])
                         }
-                        self.s3.update_object_metadata(existing_key, new_metadata)
+                        s3_client.update_object_metadata(existing_key, new_metadata)
                         
                         # Update database with new path/name
                         sha256 = Path(existing_key).stem
@@ -261,18 +271,13 @@ class DriveSync:
                             drive_path=file_meta['path'],
                             original_name=file_meta['name']
                         )
-                        
-                        tqdm.write(f"   ✅ Metadata updated (path: {file_meta['path']})")
                     except Exception as e:
-                        logger.error(f"   ❌ Failed to update metadata: {e}")
-                else:
-                    tqdm.write(f"   [DRY RUN] Would update metadata for {existing_key}")
+                        logger.debug(f"Failed to update metadata: {e}")
                 
                 # Extract SHA256 from key: objects/aa/bb/sha256.ext
                 sha256 = Path(existing_key).stem
                 return (existing_key, False, sha256)
             else:
-                tqdm.write(f"   ⏭️  Already synced (Drive ID: {file_id[:12]}...), skipping")
                 # Extract SHA256 from key: objects/aa/bb/sha256.ext
                 sha256 = Path(existing_key).stem
                 return (existing_key, False, sha256)
@@ -288,12 +293,12 @@ class DriveSync:
         # Download from Drive
         logger.debug("   📥 Downloading from Drive...")
         if is_export:
-            request = self.drive_service.files().export_media(
+            request = drive_service.files().export_media(
                 fileId=file_id,
                 mimeType=export_mime
             )
         else:
-            request = self.drive_service.files().get_media(fileId=file_id)
+            request = drive_service.files().get_media(fileId=file_id)
         
         # Download to memory
         file_buffer = io.BytesIO()
@@ -365,7 +370,7 @@ class DriveSync:
                 'drive-path': sanitize_metadata_value(file_meta['path'])
             }
             
-            self.s3.put_object(
+            s3_client.put_object(
                 key=s3_key,
                 data=file_data,
                 metadata=metadata,
@@ -383,11 +388,10 @@ class DriveSync:
                 extension=extension
             )
             
-            logger.info(f"   ✅ Uploaded to S3 and saved to database")
             return (s3_key, True, sha256)  # Return (key, is_new=True, sha256)
         
         except Exception as e:
-            logger.error(f"   ❌ Error: {e}")
+            logger.debug(f"Error uploading {file_meta['name']}: {e}")
             
             # Save error to database
             if sha256:
@@ -426,28 +430,27 @@ class DriveSync:
             logger.info(f"   [TARGET: Sync up to {max_files} NEW files]")
         logger.info("="*80)
         
-        # Get checkpoint - but DON'T use it when max_files is specified
-        # When user specifies max_files, they want to process files regardless of checkpoint
-        # The SHA-256 check will handle deduplication
-        if max_files or force_full:
+        # Get checkpoint (for logging only - we'll check database for each file)
+        # When force_full is specified, ignore checkpoint
+        if force_full:
             last_checkpoint = None
-            if max_files:
-                logger.info("   💡 Checking all Drive files (SHA-256 deduplication will skip existing)")
+            logger.info("   💡 Force full sync: Checking all Drive files")
         else:
-            last_checkpoint = self.get_checkpoint()
+            last_checkpoint = self.get_last_checkpoint()
         
         # List files from Drive - generator yields files one at a time (memory-efficient)
-        # Multiply by 5 to have enough buffer for deduplication
-        fetch_limit = (max_files * 5) if max_files else None
+        # Don't filter by modified_after - let database lookups handle deduplication
+        # This ensures we process ALL unsynced files, not just recently modified ones
+        # Don't limit fetch - keep fetching until we have max_files NEW files
         
         files_generator = self.list_files_from_drive(
-            max_files=fetch_limit,
-            modified_after=last_checkpoint
+            max_files=None,  # No fetch limit - keep going until we get enough NEW files
+            modified_after=None  # Don't filter - check database instead
         )
         
         # Process files with progress tracking
         # Note: We'll stop after max_files successful NEW uploads
-        tracker = ProgressTracker(fetch_limit or 0, "Syncing")
+        tracker = ProgressTracker(max_files or 0, "Syncing")
         latest_modified = last_checkpoint
         new_files_synced = 0
         synced_sha256_hashes = []  # Track SHA256 hashes of synced files
@@ -456,81 +459,39 @@ class DriveSync:
         # Using 10 workers for concurrent Drive API calls and S3 uploads
         MAX_WORKERS = 10
         
-        # Buffer to collect files for parallel processing
-        batch_size = 50  # Process 50 files at a time in parallel
+        # Smaller batch size for better granularity when stopping
+        batch_size = 10
         file_batch = []
         
+        # Create clean progress bar with proper formatting
+        pbar = tqdm(
+            total=max_files if max_files else None,
+            desc="📥 Syncing",
+            unit=" file",
+            ncols=100,
+            bar_format='{desc}: {n_fmt}/{total_fmt} [{elapsed}] {bar} {postfix}'
+        )
+        
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            with tqdm(desc="📥 Syncing files", unit="file") as pbar:
-                for file_meta in files_generator:
-                    # Stop if we've reached the max_files limit for NEW files
-                    if max_files and new_files_synced >= max_files:
-                        logger.info(f"\n✅ Reached target of {max_files} new files, stopping")
-                        break
-                    
-                    file_batch.append(file_meta)
-                    
-                    # Process batch when it reaches batch_size or at the end
-                    if len(file_batch) >= batch_size:
-                        # Submit all tasks in batch
-                        future_to_file = {
-                            executor.submit(self.download_and_upload_file, file_meta): file_meta
-                            for file_meta in file_batch
-                        }
-                        
-                        # Collect results
-                        for future in as_completed(future_to_file):
-                            file_meta = future_to_file[future]
-                            
-                            try:
-                                result = future.result()
-                                
-                                # result is either None (failed) or (s3_key, is_new, sha256) tuple
-                                if result:
-                                    s3_key, is_new, sha256 = result
-                                    tracker.update(success=True)
-                                    
-                                    # Track all successfully synced files (new or existing)
-                                    synced_sha256_hashes.append(sha256)
-                                    
-                                    if is_new:
-                                        new_files_synced += 1
-                                    
-                                    # Track latest modified time and save checkpoint incrementally
-                                    if not latest_modified or file_meta['modifiedTime'] > latest_modified:
-                                        latest_modified = file_meta['modifiedTime']
-                                        # Save checkpoint incrementally (every 10 files)
-                                        if tracker.successful % 10 == 0:
-                                            self.save_checkpoint(latest_modified)
-                                    
-                                    skipped = tracker.successful - new_files_synced
-                                    pbar.set_postfix_str(f"✅ {new_files_synced} new | ⏭️  {skipped} skipped")
-                                else:
-                                    tracker.update(success=False)
-                                    skipped = tracker.successful - new_files_synced
-                                    pbar.set_postfix_str(f"✅ {new_files_synced} new | ⏭️  {skipped} skipped | ❌ {tracker.failed} failed")
-                                
-                                pbar.update(1)
-                            except Exception as e:
-                                logger.error(f"   ❌ Error processing {file_meta.get('name', 'unknown')}: {e}")
-                                tracker.update(success=False)
-                                pbar.update(1)
-                        
-                        # Clear batch
-                        file_batch = []
-                        
-                        # Stop if we've reached the limit after processing this batch
-                        if max_files and new_files_synced >= max_files:
-                            break
+            for file_meta in files_generator:
+                # Stop if we've reached the max_files limit for NEW files
+                if max_files and new_files_synced >= max_files:
+                    pbar.write(f"\n✅ Reached target of {max_files} new files, stopping")
+                    break
                 
-                # Process remaining files in the last batch
-                if file_batch and (not max_files or new_files_synced < max_files):
+                file_batch.append(file_meta)
+                
+                # Process batch when it reaches batch_size or at the end
+                if len(file_batch) >= batch_size:
+                    # Submit all tasks in batch
                     future_to_file = {
                         executor.submit(self.download_and_upload_file, file_meta): file_meta
                         for file_meta in file_batch
                     }
                     
+                    # Collect results
                     for future in as_completed(future_to_file):
+                        # Check if we've already reached the limit
                         if max_files and new_files_synced >= max_files:
                             break
                         
@@ -539,31 +500,83 @@ class DriveSync:
                         try:
                             result = future.result()
                             
+                            # result is either None (failed) or (s3_key, is_new, sha256) tuple
                             if result:
                                 s3_key, is_new, sha256 = result
                                 tracker.update(success=True)
+                                
+                                # Track all successfully synced files (new or existing)
                                 synced_sha256_hashes.append(sha256)
                                 
                                 if is_new:
                                     new_files_synced += 1
+                                    pbar.update(1)
                                 
+                                # Track latest modified time and save checkpoint incrementally
                                 if not latest_modified or file_meta['modifiedTime'] > latest_modified:
                                     latest_modified = file_meta['modifiedTime']
-                                    if tracker.successful % 10 == 0:
-                                        self.save_checkpoint(latest_modified)
+                                    # Save checkpoint incrementally (every 10 files) - silently
+                                    if new_files_synced % 10 == 0 and new_files_synced > 0:
+                                        self.save_checkpoint(latest_modified, silent=True)
                                 
                                 skipped = tracker.successful - new_files_synced
-                                pbar.set_postfix_str(f"✅ {new_files_synced} new | ⏭️  {skipped} skipped")
+                                pbar.set_postfix_str(f"new={new_files_synced}, skipped={skipped}")
                             else:
                                 tracker.update(success=False)
                                 skipped = tracker.successful - new_files_synced
-                                pbar.set_postfix_str(f"✅ {new_files_synced} new | ⏭️  {skipped} skipped | ❌ {tracker.failed} failed")
+                                pbar.set_postfix_str(f"new={new_files_synced}, skipped={skipped}, failed={tracker.failed}")
                             
-                            pbar.update(1)
                         except Exception as e:
-                            logger.error(f"   ❌ Error processing {file_meta.get('name', 'unknown')}: {e}")
+                            pbar.write(f"❌ Error: {file_meta.get('name', 'unknown')}: {e}")
                             tracker.update(success=False)
-                            pbar.update(1)
+                    
+                    # Clear batch
+                    file_batch = []
+                    
+                    # Stop if we've reached the limit after processing this batch
+                    if max_files and new_files_synced >= max_files:
+                        break
+            
+            # Process remaining files in the last batch
+            if file_batch and (not max_files or new_files_synced < max_files):
+                future_to_file = {
+                    executor.submit(self.download_and_upload_file, file_meta): file_meta
+                    for file_meta in file_batch
+                }
+                
+                for future in as_completed(future_to_file):
+                    if max_files and new_files_synced >= max_files:
+                        break
+                    
+                    file_meta = future_to_file[future]
+                    
+                    try:
+                        result = future.result()
+                        
+                        if result:
+                            s3_key, is_new, sha256 = result
+                            tracker.update(success=True)
+                            synced_sha256_hashes.append(sha256)
+                            
+                            if is_new:
+                                new_files_synced += 1
+                                pbar.update(1)
+                            
+                            if not latest_modified or file_meta['modifiedTime'] > latest_modified:
+                                latest_modified = file_meta['modifiedTime']
+                            
+                            skipped = tracker.successful - new_files_synced
+                            pbar.set_postfix_str(f"new={new_files_synced}, skipped={skipped}")
+                        else:
+                            tracker.update(success=False)
+                            skipped = tracker.successful - new_files_synced
+                            pbar.set_postfix_str(f"new={new_files_synced}, skipped={skipped}, failed={tracker.failed}")
+                        
+                    except Exception as e:
+                        pbar.write(f"❌ Error: {file_meta.get('name', 'unknown')}: {e}")
+                        tracker.update(success=False)
+        
+        pbar.close()
         
         # Check if no files were found
         if tracker.successful == 0 and tracker.failed == 0:

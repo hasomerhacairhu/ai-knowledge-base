@@ -5,7 +5,18 @@ Main entry point for the document ingestion workflow
 
 import argparse
 import sys
+import warnings
+import os
 from pathlib import Path
+
+# Suppress all deprecation and compatibility warnings
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', message='.*deprecated.*')
+warnings.filterwarnings('ignore', message='.*max_size.*')
+
+# Suppress PIL/Pillow deprecation warnings at environment level
+os.environ['PYTHONWARNINGS'] = 'ignore::DeprecationWarning,ignore::FutureWarning'
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))

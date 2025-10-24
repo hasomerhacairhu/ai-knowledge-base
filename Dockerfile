@@ -6,20 +6,23 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (minimal - poppler for PDFs, libmagic, and Tesseract OCR)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    poppler-utils \
+    libmagic1 \
+    libgomp1 \
     tesseract-ocr \
-    tesseract-ocr-hun \
     tesseract-ocr-eng \
+    tesseract-ocr-hun \
     tesseract-ocr-ces \
     tesseract-ocr-slk \
     tesseract-ocr-pol \
-    poppler-utils \
-    libmagic1 \
+    tesseract-ocr-deu \
+    tesseract-ocr-fra \
+    tesseract-ocr-spa \
+    tesseract-ocr-ita \
+    tesseract-ocr-ron \
     && rm -rf /var/lib/apt/lists/*
-
-# Verify Tesseract installation
-RUN tesseract --version && tesseract --list-langs
 
 # Copy project files
 COPY pyproject.toml uv.lock ./
@@ -35,11 +38,10 @@ RUN uv sync --frozen
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
-ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import pytesseract; pytesseract.get_tesseract_version()"
+    CMD tesseract --version && python -c "import pytesseract; print('Tesseract ready')"
 
 # Default command (can be overridden)
 CMD ["uv", "run", "python", "main.py", "--help"]
