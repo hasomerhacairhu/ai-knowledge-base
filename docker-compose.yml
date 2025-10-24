@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  ingest:
+    build: .
+    container_name: ai-knowledge-base-ingest
+    env_file:
+      - .env.docker
+    volumes:
+      # Mount service account JSON
+      - ./somer-services-458421-ee757e0c4238.json:/app/somer-services-458421-ee757e0c4238.json:ro
+    command: uv run python main.py --max-files 5
+    restart: unless-stopped
+    
+  # Optional: MinIO for local S3 testing
+  minio:
+    image: minio/minio:latest
+    container_name: minio-storage
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+volumes:
+  minio_data:

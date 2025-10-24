@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Project specific
+.env
+test_access.py
+verify_setup.py
+*.md
+!README.md
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Test files
+tests/
