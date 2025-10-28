@@ -183,7 +183,7 @@ class VectorStoreIndexer:
             log(f"   📚 Adding to Vector Store: {self.config.vector_store_id}")
             
             def add_to_vector_store():
-                return self.openai_client.beta.vector_stores.files.create(
+                return self.openai_client.vector_stores.files.create(
                     vector_store_id=self.config.vector_store_id,
                     file_id=file_id
                 )
