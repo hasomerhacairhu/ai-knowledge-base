@@ -246,7 +246,31 @@ class DriveSync:
         modified_time = file_meta['modifiedTime']
         created_time = file_meta.get('createdTime', modified_time)
         
-        # STEP 1: Check if Drive ID already exists (FAST - no download needed)
+        # STEP 1: Check if Drive ID already exists in mapping table (FAST - no download needed)
+        drive_mapping = self.database.get_drive_mapping(file_id)
+        if drive_mapping:
+            # This Drive file was already processed, get its SHA256
+            sha256 = drive_mapping['sha256']
+            existing_file = self.database.get_file_by_sha256(sha256)
+            
+            if existing_file:
+                # File content exists, just update mapping if metadata changed
+                if (drive_mapping['drive_path'] != file_meta['path'] or 
+                    drive_mapping['original_name'] != file_meta['name']):
+                    logger.debug(f"   📝 Updating Drive mapping metadata for {file_meta['name']}")
+                    self.database.upsert_drive_mapping(
+                        drive_file_id=file_id,
+                        sha256=sha256,
+                        drive_path=file_meta['path'],
+                        original_name=file_meta['name'],
+                        drive_created_time=created_time,
+                        drive_modified_time=modified_time,
+                        drive_mime_type=mime_type
+                    )
+                
+                return (existing_file['s3_key'], False, sha256)
+        
+        # STEP 2: Check if Drive ID exists in legacy file_state table (for backward compatibility)
         existing_result = self.file_already_synced(file_id, file_meta['path'], file_meta['name'])
         if existing_result:
             existing_key, needs_metadata_update = existing_result
@@ -269,7 +293,10 @@ class DriveSync:
                             status=FileStatus.SYNCED,
                             drive_file_id=file_id,
                             drive_path=file_meta['path'],
-                            original_name=file_meta['name']
+                            original_name=file_meta['name'],
+                            drive_created_time=created_time,
+                            drive_modified_time=modified_time,
+                            drive_mime_type=mime_type
                         )
                     except Exception as e:
                         logger.debug(f"Failed to update metadata: {e}")
@@ -300,114 +327,146 @@ class DriveSync:
         else:
             request = drive_service.files().get_media(fileId=file_id)
         
-        # Download to memory
-        file_buffer = io.BytesIO()
-        downloader = MediaIoBaseDownload(file_buffer, request)
-        
-        done = False
-        while not done:
-            status, done = downloader.next_chunk()
-            if status:
-                logger.debug(f"   Download: {int(status.progress() * 100)}%")
-        
-        file_buffer.seek(0)
-        file_data = file_buffer.getvalue()
-        
-        # Compute SHA-256
-        sha256 = hashlib.sha256(file_data).hexdigest()
-        logger.debug(f"   🔑 SHA-256: {sha256[:16]}...")
-        
-        # Generate CAS key with hash-based sharding: objects/aa/bb/aabbcc...xyz.ext
-        # Use first 2 and next 2 chars for directory sharding (like Git)
-        extension = Path(file_name).suffix.lower()
-        shard1 = sha256[:2]
-        shard2 = sha256[2:4]
-        s3_key = f"objects/{shard1}/{shard2}/{sha256}{extension}"
-        
-        # STEP 2: Check if this SHA-256 already exists in database (content-based deduplication)
-        existing_by_hash = self.database.get_file_by_sha256(sha256)
-        if existing_by_hash:
-            logger.info(f"   ⏭️  Content already exists (SHA-256: {sha256[:16]}...), updating Drive mapping")
+        # Download to temporary file (memory-efficient streaming)
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='wb', delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+            downloader = MediaIoBaseDownload(tmp_file, request)
             
-            # Update database to map this Drive ID to existing SHA-256
-            if not self.dry_run:
-                self.database.upsert_file(
+            done = False
+            while not done:
+                status, done = downloader.next_chunk()
+                if status:
+                    logger.debug(f"   Download: {int(status.progress() * 100)}%")
+        
+        try:
+            # Compute SHA-256 by streaming from temp file (memory-efficient)
+            sha256_hash = hashlib.sha256()
+            with open(tmp_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(8192), b''):
+                    sha256_hash.update(chunk)
+            sha256 = sha256_hash.hexdigest()
+            logger.debug(f"   🔑 SHA-256: {sha256[:16]}...")
+            
+            # Generate CAS key with hash-based sharding: objects/aa/bb/aabbcc...xyz.ext
+            # Use first 2 and next 2 chars for directory sharding (like Git)
+            extension = Path(file_name).suffix.lower()
+            shard1 = sha256[:2]
+            shard2 = sha256[2:4]
+            s3_key = f"objects/{shard1}/{shard2}/{sha256}{extension}"
+            
+            # STEP 3: Check if this SHA-256 already exists in database (content-based deduplication)
+            existing_by_hash = self.database.get_file_by_sha256(sha256)
+            if existing_by_hash:
+                logger.info(f"   ⏭️  Content already exists (SHA-256: {sha256[:16]}...), adding Drive mapping")
+                
+                # Add mapping for this Drive file to existing content (don't update file_state)
+                if not self.dry_run:
+                    self.database.upsert_drive_mapping(
+                        drive_file_id=file_id,
+                        sha256=sha256,
+                        drive_path=file_meta['path'],
+                        original_name=file_meta['name'],
+                        drive_created_time=created_time,
+                        drive_modified_time=modified_time,
+                        drive_mime_type=mime_type
+                    )
+                
+                return (s3_key, False, sha256)  # Return (key, is_new=False, sha256)
+            
+            logger.debug(f"   S3 key: {s3_key}")
+            
+            if self.dry_run:
+                logger.info(f"   [DRY RUN] Would upload to s3://{self.config.s3_bucket}/{s3_key}")
+                return (s3_key, True, sha256)  # Return (key, is_new=True, sha256) for dry run
+            
+            try:
+                # Detect MIME type based on extension
+                mime_types = {
+                    '.pdf': 'application/pdf',
+                    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    '.txt': 'text/plain',
+                    '.rtf': 'application/rtf',
+                    '.epub': 'application/epub+zip'
+                }
+                content_type = mime_types.get(extension, 'application/octet-stream')
+                
+                # Upload to S3 with minimal metadata (avoid duplication with meta.json later)
+                metadata = {
+                    'sha256': sha256,
+                    'drive-file-id': file_id,
+                    'original-name': sanitize_metadata_value(file_meta['name']),
+                    'drive-path': sanitize_metadata_value(file_meta['path'])
+                }
+                
+                # Read file from disk and upload to S3
+                with open(tmp_path, 'rb') as f:
+                    file_data = f.read()
+                
+                s3_client.put_object(
+                    key=s3_key,
+                    data=file_data,
+                    metadata=metadata,
+                    content_type=content_type
+                )
+                
+                # Save to database atomically (after successful S3 upload)
+                # Return value indicates if this was a new insert (True) or update (False)
+                was_inserted = self.database.upsert_file(
                     sha256=sha256,
                     s3_key=s3_key,
                     status=FileStatus.SYNCED,
                     drive_file_id=file_id,
                     drive_path=file_meta['path'],
                     original_name=file_meta['name'],
-                    extension=extension
+                    extension=extension,
+                    drive_created_time=created_time,
+                    drive_modified_time=modified_time,
+                    drive_mime_type=mime_type
                 )
-            
-            return (s3_key, False, sha256)  # Return (key, is_new=False, sha256)
-        
-        logger.debug(f"   S3 key: {s3_key}")
-        
-        if self.dry_run:
-            logger.info(f"   [DRY RUN] Would upload to s3://{self.config.s3_bucket}/{s3_key}")
-            return (s3_key, True, sha256)  # Return (key, is_new=True, sha256) for dry run
-        
-        try:
-            # Detect MIME type based on extension
-            mime_types = {
-                '.pdf': 'application/pdf',
-                '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-                '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                '.txt': 'text/plain',
-                '.rtf': 'application/rtf',
-                '.epub': 'application/epub+zip'
-            }
-            content_type = mime_types.get(extension, 'application/octet-stream')
-            
-            # Upload to S3 with minimal metadata (avoid duplication with meta.json later)
-            metadata = {
-                'sha256': sha256,
-                'drive-file-id': file_id,
-                'original-name': sanitize_metadata_value(file_meta['name']),
-                'drive-path': sanitize_metadata_value(file_meta['path'])
-            }
-            
-            s3_client.put_object(
-                key=s3_key,
-                data=file_data,
-                metadata=metadata,
-                content_type=content_type
-            )
-            
-            # Save to database atomically (after successful S3 upload)
-            self.database.upsert_file(
-                sha256=sha256,
-                s3_key=s3_key,
-                status=FileStatus.SYNCED,
-                drive_file_id=file_id,
-                drive_path=file_meta['path'],
-                original_name=file_meta['name'],
-                extension=extension
-            )
-            
-            return (s3_key, True, sha256)  # Return (key, is_new=True, sha256)
-        
-        except Exception as e:
-            logger.debug(f"Error uploading {file_meta['name']}: {e}")
-            
-            # Save error to database
-            if sha256:
-                self.database.upsert_file(
-                    sha256=sha256,
-                    s3_key=s3_key,
-                    status=FileStatus.FAILED_SYNC,
+                
+                # Also save the Drive file mapping
+                self.database.upsert_drive_mapping(
                     drive_file_id=file_id,
+                    sha256=sha256,
                     drive_path=file_meta['path'],
                     original_name=file_meta['name'],
-                    extension=extension,
-                    error_message=str(e),
-                    error_type=type(e).__name__
+                    drive_created_time=created_time,
+                    drive_modified_time=modified_time,
+                    drive_mime_type=mime_type
                 )
+                
+                return (s3_key, was_inserted, sha256)  # is_new reflects actual database insert
             
-            return None
+            except Exception as e:
+                logger.debug(f"Error uploading {file_meta['name']}: {e}")
+                
+                # Save error to database
+                if sha256:
+                    self.database.upsert_file(
+                        sha256=sha256,
+                        s3_key=s3_key,
+                        status=FileStatus.FAILED_SYNC,
+                        drive_file_id=file_id,
+                        drive_path=file_meta['path'],
+                        original_name=file_meta['name'],
+                        extension=extension,
+                        drive_created_time=created_time,
+                        drive_modified_time=modified_time,
+                        drive_mime_type=mime_type,
+                        error_message=str(e),
+                        error_type=type(e).__name__
+                    )
+                
+                return None
+        
+        finally:
+            # Clean up temporary file
+            import os
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
     
     def sync(self, max_files: Optional[int] = None, force_full: bool = False) -> Tuple[int, int, List[str]]:
         """
@@ -474,27 +533,36 @@ class DriveSync:
         
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             for file_meta in files_generator:
-                # Stop if we've reached the max_files limit for NEW files
-                if max_files and new_files_synced >= max_files:
-                    pbar.write(f"\n✅ Reached target of {max_files} new files, stopping")
+                # Stop if we've reached the max_files limit for total processed files (new + skipped)
+                if max_files and tracker.successful >= max_files:
+                    pbar.write(f"\n✅ Reached target of {max_files} total files, stopping")
                     break
                 
                 file_batch.append(file_meta)
                 
                 # Process batch when it reaches batch_size or at the end
                 if len(file_batch) >= batch_size:
+                    # Calculate how many more files we can accept (new + skipped)
+                    remaining_slots = None
+                    if max_files:
+                        remaining_slots = max(0, max_files - tracker.successful)
+                        if remaining_slots == 0:
+                            # Already at limit, don't process this batch
+                            pbar.write(f"\n✅ Reached target of {max_files} total files, stopping")
+                            file_batch = []
+                            break
+                        # Limit batch size to remaining slots to avoid overshooting
+                        # Note: We count all successfully processed files (new + skipped)
+                        # Submit the full batch but stop processing after hitting limit
+                    
                     # Submit all tasks in batch
                     future_to_file = {
                         executor.submit(self.download_and_upload_file, file_meta): file_meta
                         for file_meta in file_batch
                     }
                     
-                    # Collect results
+                    # Collect results - check limit AFTER each result
                     for future in as_completed(future_to_file):
-                        # Check if we've already reached the limit
-                        if max_files and new_files_synced >= max_files:
-                            break
-                        
                         file_meta = future_to_file[future]
                         
                         try:
@@ -511,6 +579,12 @@ class DriveSync:
                                 if is_new:
                                     new_files_synced += 1
                                     pbar.update(1)
+                                    
+                                    # Log when we hit the limit (but continue processing this batch)
+                                    if max_files and tracker.successful == max_files:
+                                        pbar.write(f"🎯 Hit limit: {tracker.successful}/{max_files} (finishing current batch)")
+                                    
+                                    # Don't break here - let the batch finish to avoid abandoned futures
                                 
                                 # Track latest modified time and save checkpoint incrementally
                                 if not latest_modified or file_meta['modifiedTime'] > latest_modified:
@@ -534,20 +608,19 @@ class DriveSync:
                     file_batch = []
                     
                     # Stop if we've reached the limit after processing this batch
-                    if max_files and new_files_synced >= max_files:
+                    if max_files and tracker.successful >= max_files:
+                        pbar.write(f"\n✅ Reached target of {max_files} total files, stopping after batch")
+                        file_batch = []  # Ensure final batch is empty
                         break
             
             # Process remaining files in the last batch
-            if file_batch and (not max_files or new_files_synced < max_files):
+            if file_batch and (not max_files or tracker.successful < max_files):
                 future_to_file = {
                     executor.submit(self.download_and_upload_file, file_meta): file_meta
                     for file_meta in file_batch
                 }
                 
                 for future in as_completed(future_to_file):
-                    if max_files and new_files_synced >= max_files:
-                        break
-                    
                     file_meta = future_to_file[future]
                     
                     try:
@@ -561,6 +634,8 @@ class DriveSync:
                             if is_new:
                                 new_files_synced += 1
                                 pbar.update(1)
+                                
+                                # Don't break - finish processing all futures in final batch
                             
                             if not latest_modified or file_meta['modifiedTime'] > latest_modified:
                                 latest_modified = file_meta['modifiedTime']

@@ -78,6 +78,11 @@ class Database:
                     processed_at TEXT,
                     indexed_at TEXT,
                     
+                    -- Drive metadata
+                    drive_created_time TEXT,
+                    drive_modified_time TEXT,
+                    drive_mime_type TEXT,
+                    
                     -- OpenAI references
                     openai_file_id TEXT,
                     vector_store_id TEXT,
@@ -110,6 +115,30 @@ class Database:
                 ON file_state(updated_at)
             """)
             
+            # Migrate existing databases: add new columns if they don't exist
+            self._migrate_schema(cursor)
+            
+            # Drive file mapping table - tracks all Drive files pointing to same SHA256
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS drive_file_mapping (
+                    drive_file_id TEXT PRIMARY KEY,
+                    sha256 TEXT NOT NULL,
+                    drive_path TEXT,
+                    original_name TEXT,
+                    drive_created_time TEXT,
+                    drive_modified_time TEXT,
+                    drive_mime_type TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (sha256) REFERENCES file_state(sha256)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_drive_mapping_sha256
+                ON drive_file_mapping(sha256)
+            """)
+            
             # Checkpoint table for incremental sync
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS checkpoint (
@@ -120,6 +149,29 @@ class Database:
             """)
             
             logger.debug(f"✅ Database schema initialized: {self.db_path}")
+    
+    def _migrate_schema(self, cursor):
+        """
+        Migrate existing database schema by adding missing columns.
+        
+        This is safe to run on both new and existing databases.
+        SQLite doesn't support "ADD COLUMN IF NOT EXISTS", so we need to check first.
+        """
+        # Check which columns exist
+        cursor.execute("PRAGMA table_info(file_state)")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+        
+        # Add drive metadata columns if they don't exist
+        columns_to_add = [
+            ("drive_created_time", "TEXT"),
+            ("drive_modified_time", "TEXT"),
+            ("drive_mime_type", "TEXT")
+        ]
+        
+        for column_name, column_type in columns_to_add:
+            if column_name not in existing_columns:
+                cursor.execute(f"ALTER TABLE file_state ADD COLUMN {column_name} {column_type}")
+                logger.info(f"✅ Added column: {column_name}")
     
     def _enable_wal_mode(self):
         """
@@ -142,10 +194,13 @@ class Database:
                    drive_path: Optional[str] = None,
                    original_name: Optional[str] = None,
                    extension: Optional[str] = None,
+                   drive_created_time: Optional[str] = None,
+                   drive_modified_time: Optional[str] = None,
+                   drive_mime_type: Optional[str] = None,
                    openai_file_id: Optional[str] = None,
                    vector_store_id: Optional[str] = None,
                    error_message: Optional[str] = None,
-                   error_type: Optional[str] = None) -> None:
+                   error_type: Optional[str] = None) -> bool:
         """
         Insert or update file state
         
@@ -157,10 +212,16 @@ class Database:
             drive_path: Path in Google Drive
             original_name: Original filename
             extension: File extension
+            drive_created_time: Creation time in Drive (ISO format)
+            drive_modified_time: Last modified time in Drive (ISO format)
+            drive_mime_type: MIME type from Drive
             openai_file_id: OpenAI file ID (if indexed)
             vector_store_id: Vector Store ID (if indexed)
             error_message: Error message (if failed)
             error_type: Error type (if failed)
+            
+        Returns:
+            bool: True if a new row was inserted, False if existing row was updated
         """
         now = datetime.utcnow().isoformat()
         
@@ -188,6 +249,12 @@ class Database:
                     updates["original_name"] = original_name
                 if extension is not None:
                     updates["extension"] = extension
+                if drive_created_time is not None:
+                    updates["drive_created_time"] = drive_created_time
+                if drive_modified_time is not None:
+                    updates["drive_modified_time"] = drive_modified_time
+                if drive_mime_type is not None:
+                    updates["drive_mime_type"] = drive_mime_type
                 if openai_file_id is not None:
                     updates["openai_file_id"] = openai_file_id
                 if vector_store_id is not None:
@@ -217,25 +284,82 @@ class Database:
                     SET {set_clause}
                     WHERE sha256 = ?
                 """, values)
+                
+                return False  # Existing row was updated
             else:
                 # Insert new record
                 cursor.execute("""
                     INSERT INTO file_state (
                         sha256, drive_file_id, drive_path, original_name, 
                         s3_key, extension, status,
-                        synced_at, openai_file_id, vector_store_id,
+                        synced_at, drive_created_time, drive_modified_time, drive_mime_type,
+                        openai_file_id, vector_store_id,
                         error_message, error_type, retry_count, last_error_at,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     sha256, drive_file_id, drive_path, original_name,
                     s3_key, extension, status.value,
                     now if status == FileStatus.SYNCED else None,
+                    drive_created_time, drive_modified_time, drive_mime_type,
                     openai_file_id, vector_store_id,
                     error_message, error_type, 0, 
                     now if error_message else None,
                     now, now
                 ))
+                
+                return True  # New row was inserted
+    
+    def upsert_drive_mapping(self, drive_file_id: str, sha256: str,
+                            drive_path: Optional[str] = None,
+                            original_name: Optional[str] = None,
+                            drive_created_time: Optional[str] = None,
+                            drive_modified_time: Optional[str] = None,
+                            drive_mime_type: Optional[str] = None) -> None:
+        """
+        Track mapping between Drive file ID and content SHA256.
+        This allows multiple Drive files to point to the same content.
+        
+        Args:
+            drive_file_id: Google Drive file ID (primary key)
+            sha256: Content SHA-256 hash
+            drive_path: Path in Google Drive
+            original_name: Original filename
+            drive_created_time: Creation time in Drive
+            drive_modified_time: Last modified time in Drive
+            drive_mime_type: MIME type from Drive
+        """
+        now = datetime.utcnow().isoformat()
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Upsert the mapping
+            cursor.execute("""
+                INSERT INTO drive_file_mapping (
+                    drive_file_id, sha256, drive_path, original_name,
+                    drive_created_time, drive_modified_time, drive_mime_type,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(drive_file_id) DO UPDATE SET
+                    sha256 = excluded.sha256,
+                    drive_path = excluded.drive_path,
+                    original_name = excluded.original_name,
+                    drive_created_time = excluded.drive_created_time,
+                    drive_modified_time = excluded.drive_modified_time,
+                    drive_mime_type = excluded.drive_mime_type,
+                    updated_at = excluded.updated_at
+            """, (drive_file_id, sha256, drive_path, original_name,
+                  drive_created_time, drive_modified_time, drive_mime_type,
+                  now, now))
+    
+    def get_drive_mapping(self, drive_file_id: str) -> Optional[Dict]:
+        """Get Drive file mapping by Drive file ID"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM drive_file_mapping WHERE drive_file_id = ?", (drive_file_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
     
     def get_file_by_sha256(self, sha256: str) -> Optional[Dict]:
         """Get file state by SHA-256"""

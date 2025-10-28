@@ -38,9 +38,6 @@ class Config:
     # Database
     database_path: str
     
-    # OCR
-    ocr_agent: str | None
-    
     @classmethod
     def from_env(cls) -> "Config":
         """Load configuration from environment variables"""
@@ -67,9 +64,6 @@ class Config:
         ext_str = os.getenv("ADDITIONAL_EXTENSIONS", ".pdf,.doc,.docx,.ppt,.pptx,.txt,.rtf,.epub")
         extensions = [ext.strip() for ext in ext_str.split(",")]
         
-        # Default to PaddleOCR if not specified (better language support than Tesseract)
-        ocr_agent = os.getenv("OCR_AGENT", "unstructured.partition.utils.ocr_models.paddle_ocr.OCRAgentPaddle")
-        
         return cls(
             google_service_account_file=required["GOOGLE_SERVICE_ACCOUNT_FILE"],
             google_drive_folder_id=required["GOOGLE_DRIVE_FOLDER_ID"],
@@ -85,5 +79,4 @@ class Config:
             processor_max_workers=int(os.getenv("PROCESSOR_MAX_WORKERS", "5")),
             indexer_max_workers=int(os.getenv("INDEXER_MAX_WORKERS", "3")),
             database_path=os.getenv("DATABASE_PATH", "/app/data/pipeline.db"),
-            ocr_agent=ocr_agent,
         )

@@ -25,7 +25,7 @@ warnings.filterwarnings('ignore', message='.*max_size.*deprecated.*')
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', message='.*No languages specified.*')
 
-# Set Tesseract as the OCR agent (default would be PaddleOCR if available)
+# Force Tesseract OCR (hardcoded - other OCR engines not supported)
 os.environ["OCR_AGENT"] = "unstructured.partition.utils.ocr_models.tesseract_ocr.OCRAgentTesseract"
 
 # Suppress Tesseract warnings
@@ -157,7 +157,7 @@ def _partition_in_process(args_tuple: tuple) -> List:
     import sys
     import warnings
     
-    # Set Tesseract as the OCR agent in worker process
+    # Force Tesseract OCR in worker process (hardcoded)
     os.environ["OCR_AGENT"] = "unstructured.partition.utils.ocr_models.tesseract_ocr.OCRAgentTesseract"
     
     # Suppress warnings in worker
@@ -379,6 +379,10 @@ def _process_single_file(
             # Detect language from filename
             language = _get_language_hint(s3_key)
             
+            # Initialize processing metadata
+            processing_strategy = "standard"
+            chars_per_page = None
+            
             # Process based on file type with timeout protection
             if ext == '.pdf':
                 # PDF: Use fast → OCR fallback WITH TIMEOUT
@@ -398,9 +402,11 @@ def _process_single_file(
                     if chars_per_page >= 200:
                         # Good text density - use fast result
                         elements = fast_elements
+                        processing_strategy = "fast"
                         log(f"   ✅ Fast extraction: {total_chars} chars, {pages} pages")
                     else:
                         # Low text density - fallback to OCR WITH TIMEOUT
+                        processing_strategy = "ocr"
                         log(f"   ⚠️  Low text density ({chars_per_page:.0f} chars/page), using OCR...")
                         
                         # Use timeout protection for OCR (Tesseract can hang)
@@ -410,6 +416,7 @@ def _process_single_file(
                         except TimeoutError as te:
                             log(f"   ⚠️  OCR timeout after 120s, falling back to fast extraction")
                             elements = fast_elements  # Use fast extraction even if sparse
+                            processing_strategy = "fast_fallback"
                 finally:
                     sys.stderr = old_stderr
             else:
@@ -422,17 +429,107 @@ def _process_single_file(
             
             log(f"   ✅ Extracted {len(elements)} elements")
             
-            # Generate artifacts
-            elements_jsonl = "\n".join(el.to_dict().__str__() for el in elements)
+            # Generate artifacts - convert to proper JSON
+            # Convert element dicts to JSON-serializable format (handle numpy types)
+            import numpy as np
+            
+            def convert_numpy_types(obj):
+                """Recursively convert numpy types to native Python types"""
+                if isinstance(obj, dict):
+                    return {k: convert_numpy_types(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_numpy_types(item) for item in obj]
+                elif isinstance(obj, tuple):
+                    return tuple(convert_numpy_types(item) for item in obj)
+                elif isinstance(obj, (np.integer, np.floating)):
+                    return float(obj)
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, (np.str_, np.bytes_)):
+                    return str(obj)
+                else:
+                    return obj
+            
+            # Convert elements to proper JSON format
+            elements_list = []
+            for el in elements:
+                el_dict = el.to_dict()
+                el_dict = convert_numpy_types(el_dict)
+                elements_list.append(json.dumps(el_dict, ensure_ascii=False))
+            
+            elements_jsonl = "\n".join(elements_list)
             text_content = "\n\n".join(str(el) for el in elements)
             
-            # Minimal meta.json - avoid duplicating S3 metadata
+            # Extract metadata from elements for enriched meta.json
+            doc_title = None
+            doc_author = None
+            page_count = 0
+            
+            try:
+                for el in elements:
+                    el_type = getattr(el, 'category', None)
+                    if not el_type:
+                        el_type = el.__class__.__name__
+                    
+                    # Try to find title (first Title element)
+                    if not doc_title and el_type == 'Title':
+                        el_text = str(el).strip()
+                        if el_text and len(el_text) > 3:
+                            doc_title = el_text[:200]  # Limit length
+                    
+                    # Count pages (PageBreak elements)
+                    if el_type == 'PageBreak':
+                        page_count += 1
+                    
+                    # Try to find author in metadata (first element only, don't scan all)
+                    if not doc_author and hasattr(el, 'metadata') and isinstance(el.metadata, dict):
+                        for author_field in ['author', 'Author', 'creator', 'Creator']:
+                            if author_field in el.metadata and el.metadata[author_field]:
+                                doc_author = str(el.metadata[author_field])[:100]
+                                break
+                        if doc_author:
+                            break  # Stop looking once we find an author
+            except Exception as e:
+                # Don't let metadata extraction break processing
+                log(f"   ⚠️  Metadata extraction issue: {e}")
+            
+            # Build comprehensive meta.json
+            processed_at = datetime.now()
+            
+            # Get synced_at timestamp from database if available
+            synced_at = None
+            if file_record and file_record.get('created_at'):
+                synced_at = file_record['created_at']
+            
             meta_info = {
+                # File identification
                 "sha256": sha256,
+                "original_filename": original_name,
+                "s3_key": s3_key,
                 "extension": ext,
+                
+                # Content metadata
                 "element_count": len(elements),
                 "text_length": len(text_content),
-                "processed_at": str(datetime.now())
+                "word_count": len(text_content.split()),
+                "page_count": page_count if page_count > 0 else None,
+                
+                # Extracted document metadata
+                "title": doc_title,
+                "author": doc_author,
+                
+                # Processing metadata
+                "language": language,
+                "synced_at": synced_at,
+                "processed_at": processed_at.isoformat(),
+                "processing_strategy": processing_strategy,
+                
+                # Source metadata from S3 (Google Drive origin)
+                "drive_file_id": file_record.get('drive_file_id') if file_record else None,
+                "drive_path": file_record.get('drive_path') if file_record else None,
+                "drive_created_time": file_record.get('drive_created_time') if file_record else None,
+                "drive_modified_time": file_record.get('drive_modified_time') if file_record else None,
+                "drive_mime_type": file_record.get('drive_mime_type') if file_record else None,
             }
             
             # Upload artifacts to derivatives/ with hash-based sharding
@@ -519,10 +616,6 @@ def _process_file_worker(sha256: str, s3_key: str, config: Config, db_path: str,
     
     database = Database(db_path)
     
-    # Set OCR agent if configured
-    if config.ocr_agent:
-        os.environ['OCR_AGENT'] = config.ocr_agent
-    
     # Delegate to shared processing logic
     return _process_single_file(sha256, s3_key, s3, database, dry_run, quiet_mode)
 
@@ -557,10 +650,6 @@ class UnstructuredProcessor:
             bucket=config.s3_bucket,
             region=config.s3_region
         )
-        
-        # Set OCR agent if configured
-        if config.ocr_agent:
-            os.environ['OCR_AGENT'] = config.ocr_agent
     
     def compute_sha256(self, data: bytes) -> str:
         """Compute SHA-256 hash of file data"""

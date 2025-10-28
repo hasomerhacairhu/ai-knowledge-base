@@ -22,7 +22,7 @@ logger = setup_logging(__name__)
 
 def purge_s3(s3_client: S3Client, bucket: str, dry_run: bool = False) -> int:
     """
-    Delete all objects from S3 bucket
+    Delete all objects from S3 bucket, including all versions if versioning is enabled
     
     Args:
         s3_client: Initialized S3Client
@@ -38,48 +38,108 @@ def purge_s3(s3_client: S3Client, bucket: str, dry_run: bool = False) -> int:
         logger.info("   [DRY RUN MODE - No changes will be made]")
     logger.info("="*80)
     
+    # Check if versioning is enabled
+    try:
+        versioning = s3_client.client.get_bucket_versioning(Bucket=bucket)
+        versioning_enabled = versioning.get('Status') == 'Enabled'
+        
+        if versioning_enabled:
+            logger.info(f"\n⚠️  Bucket versioning is ENABLED")
+            logger.info("   Will delete all object versions and delete markers")
+        else:
+            logger.info(f"\n📋 Bucket versioning is not enabled")
+    except Exception as e:
+        logger.warning(f"⚠️  Could not check versioning status: {e}")
+        versioning_enabled = False
+    
     # List all objects
     logger.info(f"\n📋 Listing objects in bucket: {bucket}")
     
     try:
-        paginator = s3_client.client.get_paginator('list_objects_v2')
-        pages = paginator.paginate(Bucket=bucket)
-        
         total_objects = 0
         deleted_count = 0
         
-        for page in pages:
-            if 'Contents' not in page:
-                continue
+        if versioning_enabled:
+            # Delete all versions and delete markers
+            paginator = s3_client.client.get_paginator('list_object_versions')
+            pages = paginator.paginate(Bucket=bucket)
             
-            objects = page['Contents']
-            total_objects += len(objects)
-            
-            if dry_run:
-                logger.info(f"   Would delete {len(objects)} objects from this page")
-                for obj in objects:
-                    logger.debug(f"   - {obj['Key']}")
-            else:
-                # Delete in batches of 1000 (S3 limit)
-                batch = [{'Key': obj['Key']} for obj in objects]
+            for page in pages:
+                # Collect both versions and delete markers
+                versions = page.get('Versions', [])
+                delete_markers = page.get('DeleteMarkers', [])
+                all_items = versions + delete_markers
                 
-                if batch:
-                    response = s3_client.client.delete_objects(
-                        Bucket=bucket,
-                        Delete={'Objects': batch}
-                    )
+                if not all_items:
+                    continue
+                
+                total_objects += len(all_items)
+                
+                if dry_run:
+                    logger.info(f"   Would delete {len(versions)} versions and {len(delete_markers)} delete markers from this page")
+                    for item in all_items:
+                        version_id = item.get('VersionId', 'null')
+                        is_delete_marker = 'IsLatest' in item and item.get('Key') in [dm['Key'] for dm in delete_markers]
+                        marker_flag = " (delete marker)" if is_delete_marker else ""
+                        logger.debug(f"   - {item['Key']} [version: {version_id}]{marker_flag}")
+                else:
+                    # Delete in batches of 1000 (S3 limit)
+                    batch = [{'Key': item['Key'], 'VersionId': item['VersionId']} for item in all_items]
                     
-                    deleted = len(response.get('Deleted', []))
-                    errors = response.get('Errors', [])
+                    if batch:
+                        response = s3_client.client.delete_objects(
+                            Bucket=bucket,
+                            Delete={'Objects': batch}
+                        )
+                        
+                        deleted = len(response.get('Deleted', []))
+                        errors = response.get('Errors', [])
+                        
+                        deleted_count += deleted
+                        
+                        logger.info(f"   ✅ Deleted {deleted} object versions/markers")
+                        
+                        if errors:
+                            logger.error(f"   ❌ Failed to delete {len(errors)} items:")
+                            for error in errors:
+                                logger.error(f"      - {error['Key']} [version: {error.get('VersionId', 'unknown')}]: {error['Message']}")
+        else:
+            # Standard deletion (no versioning)
+            paginator = s3_client.client.get_paginator('list_objects_v2')
+            pages = paginator.paginate(Bucket=bucket)
+            
+            for page in pages:
+                if 'Contents' not in page:
+                    continue
+                
+                objects = page['Contents']
+                total_objects += len(objects)
+                
+                if dry_run:
+                    logger.info(f"   Would delete {len(objects)} objects from this page")
+                    for obj in objects:
+                        logger.debug(f"   - {obj['Key']}")
+                else:
+                    # Delete in batches of 1000 (S3 limit)
+                    batch = [{'Key': obj['Key']} for obj in objects]
                     
-                    deleted_count += deleted
-                    
-                    logger.info(f"   ✅ Deleted {deleted} objects")
-                    
-                    if errors:
-                        logger.error(f"   ❌ Failed to delete {len(errors)} objects:")
-                        for error in errors:
-                            logger.error(f"      - {error['Key']}: {error['Message']}")
+                    if batch:
+                        response = s3_client.client.delete_objects(
+                            Bucket=bucket,
+                            Delete={'Objects': batch}
+                        )
+                        
+                        deleted = len(response.get('Deleted', []))
+                        errors = response.get('Errors', [])
+                        
+                        deleted_count += deleted
+                        
+                        logger.info(f"   ✅ Deleted {deleted} objects")
+                        
+                        if errors:
+                            logger.error(f"   ❌ Failed to delete {len(errors)} objects:")
+                            for error in errors:
+                                logger.error(f"      - {error['Key']}: {error['Message']}")
         
         logger.info("\n" + "="*80)
         if dry_run:
