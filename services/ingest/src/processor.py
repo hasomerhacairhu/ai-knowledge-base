@@ -497,9 +497,17 @@ def _process_single_file(
             processed_at = datetime.now()
             
             # Get synced_at timestamp from database if available
+            # Convert datetime objects to ISO format strings for JSON serialization
             synced_at = None
             if file_record and file_record.get('created_at'):
-                synced_at = file_record['created_at']
+                created = file_record['created_at']
+                synced_at = created.isoformat() if hasattr(created, 'isoformat') else str(created)
+            
+            # Helper to convert datetime to string
+            def datetime_to_str(dt):
+                if dt is None:
+                    return None
+                return dt.isoformat() if hasattr(dt, 'isoformat') else str(dt)
             
             meta_info = {
                 # File identification
@@ -527,8 +535,8 @@ def _process_single_file(
                 # Source metadata from S3 (Google Drive origin)
                 "drive_file_id": file_record.get('drive_file_id') if file_record else None,
                 "drive_path": file_record.get('drive_path') if file_record else None,
-                "drive_created_time": file_record.get('drive_created_time') if file_record else None,
-                "drive_modified_time": file_record.get('drive_modified_time') if file_record else None,
+                "drive_created_time": datetime_to_str(file_record.get('drive_created_time')) if file_record else None,
+                "drive_modified_time": datetime_to_str(file_record.get('drive_modified_time')) if file_record else None,
                 "drive_mime_type": file_record.get('drive_mime_type') if file_record else None,
             }
             
