@@ -294,8 +294,8 @@ def _process_with_timeout(tmp_path: str, ext: str, language: str, timeout: int =
     """
     from concurrent.futures import ProcessPoolExecutor, TimeoutError as FutureTimeoutError
     
-    # Adjust timeout based on file type
-    actual_timeout = timeout if ext == '.pdf' else 180  # 3 minutes for non-PDFs
+    # Use 5 minutes timeout for all file types (complex DOCX files with images can take time)
+    actual_timeout = timeout
     
     with ProcessPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_partition_in_process, (tmp_path, ext, language))
@@ -384,6 +384,8 @@ def _process_single_file(
             # Write in chunks to avoid loading entire file into memory
             for chunk in stream.iter_chunks(chunk_size=8192):
                 tmp_file.write(chunk)
+            tmp_file.flush()  # Ensure all data is written to disk
+            os.fsync(tmp_file.fileno())  # Force OS to write to disk
             tmp_file.close()
             
             # Get original name from metadata
