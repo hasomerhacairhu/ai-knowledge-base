@@ -257,6 +257,58 @@ Examples:
                     success, failed, _ = processor.process_batch(max_files=None, retry_failed=True)
                     print(f"   ✅ {success} processed, ❌ {failed} failed")
                     total_fixed += success
+                    
+                    # Index any newly processed files from the retry
+                    if success > 0:
+                        print(f"\n📚 Indexing {success} newly processed files...")
+                        success_idx, failed_idx = indexer.index_batch(max_files=None)
+                        print(f"   ✅ {success_idx} indexed, ❌ {failed_idx} failed")
+                        total_fixed += success_idx
+                
+                # Retry failed indexing (but skip files with persistent empty content errors)
+                if stats['failed_index'] > 0:
+                    print(f"\n🔄 Analyzing {stats['failed_index']} failed indexing files...")
+                    # Check if they're all "File is empty" errors (non-recoverable)
+                    with database.get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            SELECT COUNT(*) as recoverable
+                            FROM file_state 
+                            WHERE status = 'failed_index' 
+                            AND (error_message NOT LIKE '%File is empty%' OR retry_count = 0)
+                        """)
+                        recoverable = cursor.fetchone()[0]
+                        cursor.close()
+                    
+                    if recoverable > 0:
+                        print(f"   Found {recoverable} potentially recoverable files, retrying...")
+                        # Reset status to PROCESSED for retry (excluding persistent empty file errors)
+                        with database.get_connection() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("""
+                                UPDATE file_state 
+                                SET status = 'processed', 
+                                    error_message = '', 
+                                    error_type = ''
+                                WHERE status = 'failed_index' 
+                                AND (error_message NOT LIKE '%File is empty%' OR retry_count = 0)
+                            """)
+                            conn.commit()
+                            cursor.close()
+                        
+                        success, failed = indexer.index_batch(max_files=None)
+                        print(f"   ✅ {success} indexed, ❌ {failed} failed")
+                        total_fixed += success
+                    else:
+                        print(f"   ⚠️  All failures are empty files (non-recoverable)")
+                
+                # Final sweep: index any remaining processed files
+                remaining_stats = database.get_statistics()
+                if remaining_stats['processed'] > 0:
+                    print(f"\n📚 Final sweep: Indexing {remaining_stats['processed']} remaining processed files...")
+                    success, failed = indexer.index_batch(max_files=None)
+                    print(f"   ✅ {success} indexed, ❌ {failed} failed")
+                    total_fixed += success
                 
                 print(f"\n✨ Auto-fix complete: {total_fixed} files recovered")
                 print("="*80 + "\n")

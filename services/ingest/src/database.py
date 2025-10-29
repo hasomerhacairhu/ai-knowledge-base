@@ -392,8 +392,28 @@ class Database:
         return self.get_files_by_status(FileStatus.SYNCED, limit)
     
     def get_files_for_indexing(self, limit: Optional[int] = None) -> List[Dict]:
-        """Get files ready for indexing (status=PROCESSED)"""
-        return self.get_files_by_status(FileStatus.PROCESSED, limit)
+        """
+        Get files ready for indexing (status=PROCESSED and processed_text_size > 0)
+        Excludes files with empty content that cannot be indexed
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            
+            query = """
+                SELECT * FROM file_state 
+                WHERE status = %s 
+                AND (processed_text_size IS NULL OR processed_text_size > 0)
+                ORDER BY synced_at ASC
+            """
+            
+            if limit:
+                query += f" LIMIT {limit}"
+            
+            cursor.execute(query, (FileStatus.PROCESSED.value,))
+            files = cursor.fetchall()
+            cursor.close()
+            
+            return [dict(file) for file in files]
     
     def get_stale_processing_files(self, max_age_hours: int = 24) -> List[Dict]:
         """

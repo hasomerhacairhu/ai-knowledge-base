@@ -159,21 +159,33 @@ class VectorStoreIndexer:
                 error_type=""
             )
             
-            # Download text content - STREAM for memory efficiency
+            # Download text content and validate
             log("   📥 Downloading text...")
             text_stream, _ = self.s3.get_object_stream(text_key)
+            
+            # Read content to validate it's not empty
+            content = text_stream.read()
+            text_content = content.decode('utf-8', errors='ignore').strip()
+            
+            if len(text_content) == 0:
+                raise ValueError("Processed text file is empty - cannot index empty content")
+            
+            log(f"   ✅ Text size: {len(text_content)} bytes")
+            
+            # Convert back to file-like object for OpenAI upload
+            from io import BytesIO
+            text_file = BytesIO(text_content.encode('utf-8'))
+            text_file.name = f"{sha256}.txt"
+            text_file.seek(0)  # Ensure we're at the beginning
             
             # Upload to OpenAI with retry logic
             log("   📤 Uploading to OpenAI...")
             
-            # Wrap the streaming body as a file-like object with a name
-            # The boto3 StreamingBody is already a file-like object
-            text_stream.name = f"{sha256}.txt"
-            
             # Upload file with exponential backoff
             def upload_file():
+                text_file.seek(0)  # Reset position before each retry
                 return self.openai_client.files.create(
-                    file=text_stream,
+                    file=text_file,
                     purpose='assistants'
                 )
             

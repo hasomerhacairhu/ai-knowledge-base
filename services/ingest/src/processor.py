@@ -258,10 +258,14 @@ def _partition_pdf_smart(tmp_path: str, language: str, min_chars_per_page: int =
         
         # 2) Low text density - fallback to OCR with Tesseract
         # Tesseract supports multiple languages with + separator (e.g., "eng+hun")
+        # But unstructured's languages parameter needs a list of individual codes
+        lang_list = language.split('+') if '+' in language else [language]
+        
         ocr_elements = partition_pdf(
             tmp_path,
-            strategy="ocr_only",  # Pure OCR using Tesseract
-            languages=[language],  # Tesseract language codes (e.g., ["eng+hun"])
+            strategy="hi_res",  # Use hi_res strategy which includes OCR
+            languages=lang_list,  # List of language codes (e.g., ["eng", "hun"])
+            infer_table_structure=True,  # Better structure detection
             include_page_breaks=True
         )
         
@@ -271,7 +275,7 @@ def _partition_pdf_smart(tmp_path: str, language: str, min_chars_per_page: int =
         sys.stderr = old_stderr
 
 
-def _process_with_timeout(tmp_path: str, ext: str, language: str, timeout: int = 90) -> List:
+def _process_with_timeout(tmp_path: str, ext: str, language: str, timeout: int = 300) -> List:
     """
     Process document with hard timeout using ProcessPoolExecutor.
     Ensures that hung Tesseract/OCR processes are terminated.
@@ -280,7 +284,7 @@ def _process_with_timeout(tmp_path: str, ext: str, language: str, timeout: int =
         tmp_path: Path to temporary file
         ext: File extension
         language: Language code for OCR (e.g., "eng+hun", "eng")
-        timeout: Timeout in seconds (default: 90s for OCR, 20s for others)
+        timeout: Timeout in seconds (default: 300s = 5 minutes)
     
     Returns:
         List of document elements
@@ -291,7 +295,7 @@ def _process_with_timeout(tmp_path: str, ext: str, language: str, timeout: int =
     from concurrent.futures import ProcessPoolExecutor, TimeoutError as FutureTimeoutError
     
     # Adjust timeout based on file type
-    actual_timeout = timeout if ext == '.pdf' else 30
+    actual_timeout = timeout if ext == '.pdf' else 180  # 3 minutes for non-PDFs
     
     with ProcessPoolExecutor(max_workers=1) as executor:
         future = executor.submit(_partition_in_process, (tmp_path, ext, language))
@@ -423,10 +427,10 @@ def _process_single_file(
                         
                         # Use timeout protection for OCR (Tesseract can hang)
                         try:
-                            elements = _process_with_timeout(tmp_path, ext, language, timeout=120)
+                            elements = _process_with_timeout(tmp_path, ext, language, timeout=300)
                             log(f"   ✅ OCR completed successfully")
                         except TimeoutError as te:
-                            log(f"   ⚠️  OCR timeout after 120s, falling back to fast extraction")
+                            log(f"   ⚠️  OCR timeout after 300s, falling back to fast extraction")
                             elements = fast_elements  # Use fast extraction even if sparse
                             processing_strategy = "fast_fallback"
                 finally:
@@ -434,9 +438,9 @@ def _process_single_file(
             else:
                 # Non-PDF: Standard partitioning with timeout
                 try:
-                    elements = _process_with_timeout(tmp_path, ext, language, timeout=60)
+                    elements = _process_with_timeout(tmp_path, ext, language, timeout=300)
                 except TimeoutError:
-                    log(f"   ⚠️  Processing timeout after 60s")
+                    log(f"   ⚠️  Processing timeout after 300s")
                     raise  # Re-raise to mark as failed
             
             log(f"   ✅ Extracted {len(elements)} elements")
@@ -471,6 +475,27 @@ def _process_single_file(
             
             elements_jsonl = "\n".join(elements_list)
             text_content = "\n\n".join(str(el) for el in elements)
+            
+            # Check if text is empty - FAIL the processing if no text extracted
+            text_stripped = text_content.strip()
+            if len(text_stripped) == 0:
+                error_msg = "No text extracted from document (0 bytes) - file may be image-only with failed OCR, blank, or corrupted"
+                log(f"   ❌ {error_msg}")
+                
+                # Mark as FAILED_PROCESS
+                database.upsert_file(
+                    sha256=sha256,
+                    s3_key=s3_key,
+                    status=FileStatus.FAILED_PROCESS,
+                    extension=ext,
+                    processed_text_size=0,
+                    error_message=error_msg,
+                    error_type="EmptyContentError"
+                )
+                
+                return None  # Return None to indicate failure
+            
+            log(f"   ✅ Extracted {len(text_stripped)} bytes of text")
             
             # Extract metadata from elements for enriched meta.json
             doc_title = None
