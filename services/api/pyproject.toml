@@ -1,0 +1,13 @@
+[project]
+name = "ai-knowledge-base-api"
+version = "1.0.0"
+description = "API service for AI Knowledge Base semantic search"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.120.2",
+    "uvicorn[standard]>=0.38.0",
+    "httpx>=0.28.1",
+    "boto3>=1.40.61",
+    "python-dotenv>=1.1.0",
+]

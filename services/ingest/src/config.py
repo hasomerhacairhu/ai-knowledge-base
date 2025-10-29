@@ -35,8 +35,12 @@ class Config:
     processor_max_workers: int
     indexer_max_workers: int
     
-    # Database
-    database_path: str
+    # Database (PostgreSQL)
+    postgres_host: str
+    postgres_port: int
+    postgres_db: str
+    postgres_user: str
+    postgres_password: str
     
     @classmethod
     def from_env(cls) -> "Config":
@@ -78,5 +82,9 @@ class Config:
             additional_extensions=extensions,
             processor_max_workers=int(os.getenv("PROCESSOR_MAX_WORKERS", "5")),
             indexer_max_workers=int(os.getenv("INDEXER_MAX_WORKERS", "3")),
-            database_path=os.getenv("DATABASE_PATH", "/app/data/pipeline.db"),
+            postgres_host=os.getenv("POSTGRES_HOST", "localhost"),
+            postgres_port=int(os.getenv("POSTGRES_PORT", "5432")),
+            postgres_db=os.getenv("POSTGRES_DB", "ai_knowledge_base"),
+            postgres_user=os.getenv("POSTGRES_USER", "postgres"),
+            postgres_password=os.getenv("POSTGRES_PASSWORD", "postgres"),
         )

@@ -587,7 +587,7 @@ def _process_single_file(
         return None
 
 
-def _process_file_worker(sha256: str, s3_key: str, config: Config, db_path: str, dry_run: bool, quiet_mode: bool) -> Optional[str]:
+def _process_file_worker(sha256: str, s3_key: str, config: Config, db_config: dict, dry_run: bool, quiet_mode: bool) -> Optional[str]:
     """
     Standalone worker function for ProcessPoolExecutor.
     
@@ -598,7 +598,7 @@ def _process_file_worker(sha256: str, s3_key: str, config: Config, db_path: str,
         sha256: SHA-256 hash of the file
         s3_key: S3 object key to process
         config: Configuration object
-        db_path: Path to SQLite database
+        db_config: Dictionary with PostgreSQL connection parameters
         dry_run: Whether to run in dry-run mode
         quiet_mode: Whether to suppress per-file logging
     
@@ -614,7 +614,7 @@ def _process_file_worker(sha256: str, s3_key: str, config: Config, db_path: str,
         region=config.s3_region
     )
     
-    database = Database(db_path)
+    database = Database(**db_config)
     
     # Delegate to shared processing logic
     return _process_single_file(sha256, s3_key, s3, database, dry_run, quiet_mode)
@@ -805,8 +805,16 @@ class UnstructuredProcessor:
                 # Submit all tasks
                 if self.use_processes:
                     # For ProcessPoolExecutor, use the standalone worker function
+                    # Pass database config as dict
+                    db_config = {
+                        "host": self.database.connection_params["host"],
+                        "port": self.database.connection_params["port"],
+                        "database": self.database.connection_params["database"],
+                        "user": self.database.connection_params["user"],
+                        "password": self.database.connection_params["password"]
+                    }
                     future_to_key = {
-                        executor.submit(_process_file_worker, sha256, s3_key, self.config, self.database.db_path, self.dry_run, self.quiet_mode): (s3_key, sha256)
+                        executor.submit(_process_file_worker, sha256, s3_key, self.config, db_config, self.dry_run, self.quiet_mode): (s3_key, sha256)
                         for s3_key, sha256 in files
                     }
                 else:

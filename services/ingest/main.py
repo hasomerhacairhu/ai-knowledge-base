@@ -135,8 +135,14 @@ Examples:
         if args.indexer_workers:
             config.indexer_max_workers = args.indexer_workers
         
-        # Initialize database
-        database = Database(config.database_path)
+        # Initialize database (PostgreSQL)
+        database = Database(
+            host=config.postgres_host,
+            port=config.postgres_port,
+            database=config.postgres_db,
+            user=config.postgres_user,
+            password=config.postgres_password
+        )
         
         # Handle special commands
         if args.command == "migrate":

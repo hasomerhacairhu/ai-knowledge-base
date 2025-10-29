@@ -22,26 +22,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-spa \
     tesseract-ocr-ita \
     tesseract-ocr-ron \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy project files
-COPY pyproject.toml uv.lock ./
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Set uv environment variables for isolated venv
+ENV UV_PROJECT_ENVIRONMENT=/app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
+
+# Copy dependency files first (for layer caching)
+COPY pyproject.toml ./
+COPY .python-version ./
+
+# Create virtual environment and install dependencies
+RUN uv venv /app/.venv
+RUN uv sync --frozen --no-dev
+
+# Copy application code
 COPY src/ ./src/
 COPY main.py ./
-
-# Install Python dependencies using uv
-# First install uv itself
-RUN pip install --no-cache-dir uv
-
-# Install project dependencies
-RUN uv sync --frozen
-
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
+COPY purge.py ./
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD tesseract --version && python -c "import pytesseract; print('Tesseract ready')"
+    CMD tesseract --version && /app/.venv/bin/python -c "import pytesseract; print('Tesseract ready')"
 
 # Default command (can be overridden)
-CMD ["uv", "run", "python", "main.py", "--help"]
+CMD ["/app/.venv/bin/python", "main.py", "--help"]

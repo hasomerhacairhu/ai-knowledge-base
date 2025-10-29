@@ -1,0 +1,394 @@
+version: '3.8'version: '3.8'version: '3.8'version: '3.8'
+
+
+
+services:
+
+  # PostgreSQL Database
+
+  postgres:services:
+
+    image: postgres:16-alpine
+
+    container_name: ai-kb-postgres  # PostgreSQL Database
+
+    environment:
+
+      POSTGRES_DB: ${POSTGRES_DB:-ai_knowledge_base}  postgres:services:services:
+
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}    image: postgres:16-alpine
+
+    volumes:
+
+      - postgres_data:/var/lib/postgresql/data    container_name: ai-kb-postgres  # PostgreSQL Database  ingest:
+
+    ports:
+
+      - "${POSTGRES_PORT:-5432}:5432"    environment:
+
+    healthcheck:
+
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]      POSTGRES_DB: ${POSTGRES_DB:-ai_knowledge_base}  postgres:    build: .
+
+      interval: 10s
+
+      timeout: 5s      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+
+      retries: 5
+
+    restart: unless-stopped      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}    image: postgres:16-alpine    container_name: ai-knowledge-base-ingest
+
+    networks:
+
+      - ai-kb-network    volumes:
+
+
+
+  # Ingestion Service (Manual/Scheduled execution via Portainer)      - postgres_data:/var/lib/postgresql/data    container_name: ai-kb-postgres    env_file:
+
+  ingest:
+
+    build:    ports:
+
+      context: ./services/ingest
+
+      dockerfile: Dockerfile      - "${POSTGRES_PORT:-5432}:5432"    environment:      - .env.docker
+
+    image: ai-kb-ingest:latest
+
+    container_name: ai-kb-ingest    healthcheck:
+
+    env_file:
+
+      - .env      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]      POSTGRES_DB: ${POSTGRES_DB:-ai_knowledge_base}    volumes:
+
+    environment:
+
+      DATABASE_PATH: /app/data/pipeline.db      interval: 10s
+
+      POSTGRES_HOST: postgres
+
+      POSTGRES_DB: ${POSTGRES_DB:-ai_knowledge_base}      timeout: 5s      POSTGRES_USER: ${POSTGRES_USER:-postgres}      # Mount service account JSON (use environment variable for path)
+
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}      retries: 5
+
+      PATH: /app/.venv/bin:$PATH
+
+    volumes:    restart: unless-stopped      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}      - ${GOOGLE_SERVICE_ACCOUNT_FILE:-./ service-account.json}:/app/service-account.json:ro
+
+      # Mount service account JSON
+
+      - ${GOOGLE_SERVICE_ACCOUNT_FILE:-./somer-services-458421-ee757e0c4238.json}:/app/service-account.json:ro
+
+      # Mount database for persistence (shared with API)
+
+      - shared_data:/app/data  # Ingestion Service    volumes:      # Mount database for persistence
+
+    depends_on:
+
+      postgres:  ingest:
+
+        condition: service_healthy
+
+    # Default command shows help - override in Portainer when running    build:      - postgres_data:/var/lib/postgresql/data      - ./data:/app/data
+
+    command: ["/app/.venv/bin/python", "main.py", "--help"]
+
+    # Don't auto-restart - this is a job, not a service      context: ./services/ingest
+
+    restart: "no"
+
+    networks:      dockerfile: Dockerfile    ports:    command: uv run python main.py --max-files 5
+
+      - ai-kb-network
+
+    labels:    container_name: ai-kb-ingest
+
+      - "com.portainer.job=true"
+
+      - "com.portainer.job.schedule=manual"    env_file:      - "${POSTGRES_PORT:-5432}:5432"    restart: unless-stopped
+
+
+
+  # API Service (Always running)      - .env
+
+  api:
+
+    build:    environment:    healthcheck:    
+
+      context: ./services/api
+
+      dockerfile: Dockerfile      DATABASE_PATH: /app/data/pipeline.db
+
+    image: ai-kb-api:latest
+
+    container_name: ai-kb-api      POSTGRES_HOST: postgres      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]  # Optional: MinIO for local S3 testing
+
+    env_file:
+
+      - .env      POSTGRES_DB: ${POSTGRES_DB:-ai_knowledge_base}
+
+    environment:
+
+      DATABASE_PATH: /app/data/pipeline.db      POSTGRES_USER: ${POSTGRES_USER:-postgres}      interval: 10s  minio:
+
+      API_PORT: 8000
+
+      POSTGRES_HOST: postgres      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+
+      POSTGRES_DB: ${POSTGRES_DB:-ai_knowledge_base}
+
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}      PATH: /app/.venv/bin:$PATH      timeout: 5s    image: minio/minio:latest
+
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+
+      PATH: /app/.venv/bin:$PATH    volumes:
+
+    volumes:
+
+      # Share database with ingest service      # Mount service account JSON      retries: 5    container_name: minio-storage
+
+      - shared_data:/app/data:ro
+
+    ports:      - ${GOOGLE_SERVICE_ACCOUNT_FILE:-./somer-services-458421-ee757e0c4238.json}:/app/service-account.json:ro
+
+      - "${API_PORT:-8000}:8000"
+
+    depends_on:      # Mount database for persistence (shared with API)    restart: unless-stopped    ports:
+
+      postgres:
+
+        condition: service_healthy      - shared_data:/app/data
+
+    healthcheck:
+
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import httpx; httpx.get('http://localhost:8000/health', timeout=5.0)"]    depends_on:      - "9000:9000"
+
+      interval: 30s
+
+      timeout: 10s      postgres:
+
+      retries: 3
+
+      start_period: 10s        condition: service_healthy  # Ingestion Service      - "9001:9001"
+
+    restart: unless-stopped
+
+    networks:    # Run sync periodically or on-demand
+
+      - ai-kb-network
+
+    # Override with: docker-compose run ingest python main.py sync  ingest:    environment:
+
+  # Optional: MinIO for local S3 testing
+
+  minio:    command: ["/app/.venv/bin/python", "main.py", "--help"]
+
+    image: minio/minio:latest
+
+    container_name: ai-kb-minio    restart: "no"  # Manual runs    build:      MINIO_ROOT_USER: minioadmin
+
+    ports:
+
+      - "${MINIO_PORT:-9000}:9000"
+
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+
+    environment:  # API Service      context: ./services/ingest      MINIO_ROOT_PASSWORD: minioadmin
+
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}  api:
+
+    command: server /data --console-address ":9001"
+
+    volumes:    build:      dockerfile: Dockerfile    command: server /data --console-address ":9001"
+
+      - minio_data:/data
+
+    healthcheck:      context: ./services/api
+
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+
+      interval: 30s      dockerfile: Dockerfile    container_name: ai-kb-ingest    volumes:
+
+      timeout: 20s
+
+      retries: 3    container_name: ai-kb-api
+
+    restart: unless-stopped
+
+    networks:    env_file:    env_file:      - minio_data:/data
+
+      - ai-kb-network
+
+    profiles:      - .env
+
+      - dev  # Only start with: docker-compose --profile dev up
+
+    environment:      - .env    healthcheck:
+
+volumes:
+
+  postgres_data:      DATABASE_PATH: /app/data/pipeline.db
+
+    driver: local
+
+  shared_data:      API_PORT: 8000    environment:      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+
+    driver: local
+
+  minio_data:      POSTGRES_HOST: postgres
+
+    driver: local
+
+      POSTGRES_DB: ${POSTGRES_DB:-ai_knowledge_base}      DATABASE_PATH: /app/data/pipeline.db      interval: 30s
+
+networks:
+
+  ai-kb-network:      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+
+    driver: bridge
+
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}      POSTGRES_HOST: postgres      timeout: 20s
+
+      PATH: /app/.venv/bin:$PATH
+
+    volumes:      POSTGRES_DB: ${POSTGRES_DB:-ai_knowledge_base}      retries: 3
+
+      # Share database with ingest service
+
+      - shared_data:/app/data:ro      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+
+    ports:
+
+      - "${API_PORT:-8000}:8000"      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}volumes:
+
+    depends_on:
+
+      postgres:    volumes:  minio_data:
+
+        condition: service_healthy
+
+    healthcheck:      # Mount service account JSON
+
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import httpx; httpx.get('http://localhost:8000/health', timeout=5.0)"]      - ${GOOGLE_SERVICE_ACCOUNT_FILE:-./somer-services-458421-ee757e0c4238.json}:/app/service-account.json:ro
+
+      interval: 30s      # Mount database for persistence (shared with API)
+
+      timeout: 10s      - shared_data:/app/data
+
+      retries: 3    depends_on:
+
+      start_period: 10s      postgres:
+
+    restart: unless-stopped        condition: service_healthy
+
+    # Run sync periodically or on-demand
+
+  # Optional: MinIO for local S3 testing    # Override with: docker-compose run ingest uv run python main.py sync
+
+  minio:    command: ["uv", "run", "python", "main.py", "--help"]
+
+    image: minio/minio:latest    restart: "no"  # Manual runs
+
+    container_name: ai-kb-minio
+
+    ports:  # API Service
+
+      - "${MINIO_PORT:-9000}:9000"  api:
+
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"    build:
+
+    environment:      context: ./services/api
+
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}      dockerfile: Dockerfile
+
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}    container_name: ai-kb-api
+
+    command: server /data --console-address ":9001"    env_file:
+
+    volumes:      - .env
+
+      - minio_data:/data    environment:
+
+    healthcheck:      DATABASE_PATH: /app/data/pipeline.db
+
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]      API_PORT: 8000
+
+      interval: 30s      POSTGRES_HOST: postgres
+
+      timeout: 20s      POSTGRES_DB: ${POSTGRES_DB:-ai_knowledge_base}
+
+      retries: 3      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+
+    restart: unless-stopped      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+
+    profiles:      PATH: /app/.venv/bin:$PATH
+
+      - dev  # Only start with: docker-compose --profile dev up    volumes:
+
+      # Share database with ingest service
+
+volumes:      - shared_data:/app/data:ro
+
+  postgres_data:    ports:
+
+    driver: local      - "${API_PORT:-8000}:8000"
+
+  shared_data:    depends_on:
+
+    driver: local      postgres:
+
+  minio_data:        condition: service_healthy
+
+    driver: local    healthcheck:
+
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import httpx; httpx.get('http://localhost:8000/health', timeout=5.0)"]
+
+networks:      interval: 30s
+
+  default:      timeout: 10s
+
+    name: ai-kb-network      retries: 3
+
+      start_period: 10s
+    restart: unless-stopped
+
+  # Optional: MinIO for local S3 testing
+  minio:
+    image: minio/minio:latest
+    container_name: ai-kb-minio
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    restart: unless-stopped
+    profiles:
+      - dev  # Only start with: docker-compose --profile dev up
+
+volumes:
+  postgres_data:
+    driver: local
+  shared_data:
+    driver: local
+  minio_data:
+    driver: local
+
+networks:
+  default:
+    name: ai-kb-network

@@ -208,3 +208,23 @@ __marimo__/
 
 # Service account keys (keep local, never commit)
 somer-services-*.json
+
+# Project-specific
+data/
+*.db
+*.db-journal
+
+# Backup files
+*.old
+*.backup
+*.bak
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+postgres_data/
+shared_data/
+minio_data/
