@@ -61,11 +61,21 @@ class DeprecationWarningFilter:
     
     def write(self, text):
         # Only write if text doesn't contain suppressed keywords
+        # Check if stream is still open to avoid "I/O operation on closed file" errors
         if not any(keyword in text.lower() for keyword in self._suppress):
-            self.stream.write(text)
+            try:
+                if not self.stream.closed:
+                    self.stream.write(text)
+            except (ValueError, AttributeError):
+                # Stream is closed or doesn't support closed attribute, silently ignore
+                pass
     
     def flush(self):
-        self.stream.flush()
+        try:
+            if not self.stream.closed:
+                self.stream.flush()
+        except (ValueError, AttributeError):
+            pass
     
     def fileno(self):
         return self.stream.fileno() if hasattr(self.stream, 'fileno') else None

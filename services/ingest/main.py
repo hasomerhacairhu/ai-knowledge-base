@@ -8,6 +8,8 @@ import sys
 import warnings
 import os
 from pathlib import Path
+import atexit
+from concurrent.futures import ProcessPoolExecutor
 
 # Suppress all deprecation and compatibility warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -274,6 +276,18 @@ Examples:
         print("="*80)
         print("✨ Pipeline complete!")
         print("="*80 + "\n")
+        
+        # Force clean exit to avoid hanging on background threads/processes
+        # Aggressively shutdown any ProcessPoolExecutor instances
+        import concurrent.futures.process as proc
+        for executor in proc._threads_wakeups:
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except:
+                pass
+        
+        # Force immediate exit
+        os._exit(0)
     
     except ValueError as e:
         print(f"❌ Configuration error: {e}")
