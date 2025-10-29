@@ -537,28 +537,26 @@ class DriveSync:
         
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             for file_meta in files_generator:
-                # Stop if we've reached the max_files limit for total processed files (new + skipped)
-                if max_files and tracker.successful >= max_files:
-                    pbar.write(f"\n✅ Reached target of {max_files} total files, stopping")
+                # Stop if we've reached the max_files limit for NEW files
+                if max_files and new_files_synced >= max_files:
+                    pbar.write(f"\n✅ Reached target of {max_files} NEW files, stopping")
                     break
                 
                 file_batch.append(file_meta)
                 
                 # Process batch when it reaches batch_size or at the end
                 if len(file_batch) >= batch_size:
-                    # Calculate how many more files we can accept (new + skipped)
+                    # Calculate how many more NEW files we need
                     remaining_slots = None
                     if max_files:
-                        remaining_slots = max(0, max_files - tracker.successful)
+                        remaining_slots = max(0, max_files - new_files_synced)
                         if remaining_slots == 0:
                             # Already at limit, don't process this batch
-                            pbar.write(f"\n✅ Reached target of {max_files} total files, stopping")
+                            pbar.write(f"\n✅ Reached target of {max_files} NEW files, stopping")
                             file_batch = []
                             break
-                        # Limit batch size to avoid submitting too many files
-                        if remaining_slots < len(file_batch):
-                            # Only submit what we need, save the rest for next iteration
-                            file_batch = file_batch[:remaining_slots]
+                        # Note: Don't limit batch size - we need to process full batches
+                        # because we don't know which files are new until we check them
                     
                     # Submit all tasks in batch
                     future_to_file = {
@@ -585,9 +583,9 @@ class DriveSync:
                                     new_files_synced += 1
                                     pbar.update(1)
                                     
-                                    # Log when we hit the limit (but continue processing this batch)
-                                    if max_files and tracker.successful == max_files:
-                                        pbar.write(f"🎯 Hit limit: {tracker.successful}/{max_files} (finishing current batch)")
+                                    # Log when we hit the NEW files limit (but continue processing this batch)
+                                    if max_files and new_files_synced == max_files:
+                                        pbar.write(f"🎯 Hit limit: {new_files_synced}/{max_files} NEW files (finishing current batch)")
                                     
                                     # Don't break here - let the batch finish to avoid abandoned futures
                                 
@@ -612,14 +610,14 @@ class DriveSync:
                     # Clear batch
                     file_batch = []
                     
-                    # Stop if we've reached the limit after processing this batch
-                    if max_files and tracker.successful >= max_files:
-                        pbar.write(f"\n✅ Reached target of {max_files} total files, stopping after batch")
+                    # Stop if we've reached the NEW files limit after processing this batch
+                    if max_files and new_files_synced >= max_files:
+                        pbar.write(f"\n✅ Reached target of {max_files} NEW files, stopping after batch")
                         file_batch = []  # Ensure final batch is empty
                         break
             
             # Process remaining files in the last batch
-            if file_batch and (not max_files or tracker.successful < max_files):
+            if file_batch and (not max_files or new_files_synced < max_files):
                 future_to_file = {
                     executor.submit(self.download_and_upload_file, file_meta): file_meta
                     for file_meta in file_batch
