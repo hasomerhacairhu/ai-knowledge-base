@@ -35,6 +35,7 @@ ENV PYTHONUNBUFFERED=1
 
 # Copy dependency files first (for layer caching)
 COPY pyproject.toml ./
+COPY uv.lock ./
 COPY .python-version ./
 
 # Create virtual environment and install dependencies

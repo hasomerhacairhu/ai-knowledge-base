@@ -35,6 +35,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-ai_knowledge_base}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      GOOGLE_SERVICE_ACCOUNT_FILE: /app/service-account.json
       PATH: /app/.venv/bin:$PATH
     volumes:
       - ${GOOGLE_SERVICE_ACCOUNT_FILE:-./somer-services-458421-ee757e0c4238.json}:/app/service-account.json:ro
