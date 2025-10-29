@@ -62,6 +62,12 @@ Examples:
   # Run full pipeline (sync + process + index)
   python main.py --max-files 10 full
 
+  # Show pipeline statistics
+  python main.py stats
+
+  # Analyze stuck files and get recovery suggestions
+  python main.py cleanup
+
   # Production run without limits
   python main.py full
         """
@@ -72,7 +78,7 @@ Examples:
         nargs="?",
         choices=["sync", "process", "index", "full", "migrate", "stats", "cleanup"],
         default="full",
-        help="Command to run: sync (Drive→S3), process (S3→Unstructured), index (→Vector Store), full (all), migrate (S3→Database), stats (show statistics), cleanup (clean stale files). Default: full"
+        help="Command to run: sync (Drive→S3), process (S3→Unstructured), index (→Vector Store), full (all), migrate (S3→Database), stats (show statistics), cleanup (analyze stuck files & suggest fixes). Default: full"
     )
     
     parser.add_argument(
@@ -98,6 +104,12 @@ Examples:
         "--retry-failed",
         action="store_true",
         help="Retry processing files that previously failed (process command only)"
+    )
+    
+    parser.add_argument(
+        "--auto-fix",
+        action="store_true",
+        help="Automatically fix stuck files (cleanup command only)"
     )
     
     parser.add_argument(
@@ -196,12 +208,82 @@ Examples:
         
         if args.command == "cleanup":
             print("\n" + "="*80)
-            print("🧹 CLEANING UP STALE FILES")
+            print("🧹 CLEANUP & RECOVERY")
             print("="*80)
             
-            stale_count = database.mark_stale_as_failed(max_age_hours=args.max_stale_hours)
+            # Get current stats
+            stats = database.get_statistics()
             
-            print(f"✅ Marked {stale_count} stale files as failed")
+            print("\n📊 Current Status:")
+            print(f"   Synced (needs processing):  {stats['synced']}")
+            print(f"   Processed (needs indexing): {stats['processed']}")
+            print(f"   Failed Process:             {stats['failed_process']}")
+            print(f"   Failed Index:               {stats['failed_index']}")
+            print(f"   Stuck in Processing:        {stats['processing']}")
+            print(f"   Stuck in Indexing:          {stats['indexing']}")
+            
+            # Mark stale files (files stuck in intermediate states)
+            stale_count = database.mark_stale_as_failed(max_age_hours=args.max_stale_hours)
+            if stale_count > 0:
+                print(f"\n🔄 Marked {stale_count} stale files as failed (stuck > {args.max_stale_hours}h)")
+            
+            # Auto-fix mode
+            if args.auto_fix:
+                print("\n🔧 AUTO-FIX MODE - Processing stuck files...")
+                
+                # Initialize components
+                processor = UnstructuredProcessor(config, database, dry_run=args.dry_run, use_processes=args.use_processes)
+                indexer = VectorStoreIndexer(config, database, dry_run=args.dry_run)
+                
+                total_fixed = 0
+                
+                # Process synced files
+                if stats['synced'] > 0:
+                    print(f"\n📥 Processing {stats['synced']} synced files...")
+                    success, failed, _ = processor.process_batch(max_files=None, retry_failed=False)
+                    print(f"   ✅ {success} processed, ❌ {failed} failed")
+                    total_fixed += success
+                
+                # Index processed files
+                if stats['processed'] > 0:
+                    print(f"\n📚 Indexing {stats['processed']} processed files...")
+                    success, failed = indexer.index_batch(max_files=None)
+                    print(f"   ✅ {success} indexed, ❌ {failed} failed")
+                    total_fixed += success
+                
+                # Retry failed processing
+                if stats['failed_process'] > 0:
+                    print(f"\n🔄 Retrying {stats['failed_process']} failed processing...")
+                    success, failed, _ = processor.process_batch(max_files=None, retry_failed=True)
+                    print(f"   ✅ {success} processed, ❌ {failed} failed")
+                    total_fixed += success
+                
+                print(f"\n✨ Auto-fix complete: {total_fixed} files recovered")
+                print("="*80 + "\n")
+                return
+            
+            # Offer recovery options
+            print("\n💡 Recovery Options:")
+            if stats['synced'] > 0:
+                print(f"   • Process {stats['synced']} synced files:")
+                print(f"     docker compose run --rm ingest python main.py process --max-files {stats['synced']}")
+            
+            if stats['processed'] > 0:
+                print(f"   • Index {stats['processed']} processed files:")
+                print(f"     docker compose run --rm ingest python main.py index --max-files {stats['processed']}")
+            
+            if stats['failed_process'] > 0:
+                print(f"   • Retry {stats['failed_process']} failed processing:")
+                print(f"     docker compose run --rm ingest python main.py --retry-failed process")
+            
+            if stats['failed_index'] > 0:
+                print(f"   • Retry {stats['failed_index']} failed indexing:")
+                print(f"     docker compose run --rm ingest python main.py full --max-files {stats['failed_index']}")
+            
+            if stats['synced'] + stats['processed'] + stats['failed_process'] > 0:
+                print(f"\n   🔧 Or auto-fix all:")
+                print(f"     docker compose run --rm ingest python main.py cleanup --auto-fix")
+            
             print("="*80 + "\n")
             return
         
