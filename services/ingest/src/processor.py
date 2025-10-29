@@ -677,7 +677,7 @@ class UnstructuredProcessor:
     Features:
     - Memory-efficient streaming downloads from S3
     - Fast text extraction with OCR fallback for PDFs
-    - Timeout protection (120s for OCR, 60s for other files)
+    - Timeout protection (300s = 5 minutes for all file types)
     - Parallel processing with ThreadPoolExecutor (default: 5 workers)
     - Automatic cleanup of temp files and hung processes
     """
