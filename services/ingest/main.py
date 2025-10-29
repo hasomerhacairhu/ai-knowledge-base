@@ -221,7 +221,7 @@ Examples:
             print("\n📥 STAGE 1: Drive → S3 Sync")
             print("-" * 80)
             success, failed, synced_hashes = drive_sync.sync(
-                max_files=config.max_files_per_run,
+                max_files=args.max_files,
                 force_full=args.force_full_sync
             )
             print(f"\n✅ Sync: {success} successful, {failed} failed\n")
@@ -241,14 +241,14 @@ Examples:
                 # Process all SYNCED files (including newly synced and any orphaned from previous runs)
                 # Also retry any FAILED_PROCESS files automatically
                 success, failed, processed_hashes = processor.process_batch(
-                    max_files=config.max_files_per_run,
+                    max_files=args.max_files,
                     retry_failed=True,  # Auto-retry failed files in full mode
                     filter_sha256=None  # Process all pending, not just newly synced (self-healing)
                 )
             else:
                 # In standalone process mode, respect the --retry-failed flag
                 success, failed, processed_hashes = processor.process_batch(
-                    max_files=config.max_files_per_run,
+                    max_files=args.max_files,
                     retry_failed=args.retry_failed,
                     filter_sha256=None
                 )
@@ -266,7 +266,7 @@ Examples:
             # In full mode, index ALL processed files (not just newly processed ones)
             # This ensures files that were processed but failed indexing are automatically retried
             success, failed = indexer.index_batch(
-                max_files=config.max_files_per_run,
+                max_files=args.max_files,
                 filter_sha256=None  # Index all pending, for self-healing behavior
             )
             print(f"\n✅ Index: {success} successful, {failed} failed\n")
