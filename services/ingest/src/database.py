@@ -91,6 +91,10 @@ class Database:
                     drive_modified_time TIMESTAMP,
                     drive_mime_type TEXT,
                     
+                    -- File sizes
+                    original_file_size BIGINT,
+                    processed_text_size BIGINT,
+                    
                     -- OpenAI references
                     openai_file_id TEXT,
                     vector_store_id TEXT,
@@ -165,6 +169,8 @@ class Database:
                    drive_created_time: Optional[str] = None,
                    drive_modified_time: Optional[str] = None,
                    drive_mime_type: Optional[str] = None,
+                   original_file_size: Optional[int] = None,
+                   processed_text_size: Optional[int] = None,
                    openai_file_id: Optional[str] = None,
                    vector_store_id: Optional[str] = None,
                    error_message: Optional[str] = None,
@@ -183,6 +189,8 @@ class Database:
             drive_created_time: Creation time in Drive (ISO format)
             drive_modified_time: Last modified time in Drive (ISO format)
             drive_mime_type: MIME type from Drive
+            original_file_size: Size of original file in bytes
+            processed_text_size: Size of processed text in bytes
             openai_file_id: OpenAI file ID (if indexed)
             vector_store_id: Vector Store ID (if indexed)
             error_message: Error message (if failed)
@@ -227,6 +235,12 @@ class Database:
                 if drive_mime_type is not None:
                     updates.append("drive_mime_type = %s")
                     values.append(drive_mime_type)
+                if original_file_size is not None:
+                    updates.append("original_file_size = %s")
+                    values.append(original_file_size)
+                if processed_text_size is not None:
+                    updates.append("processed_text_size = %s")
+                    values.append(processed_text_size)
                 if openai_file_id is not None:
                     updates.append("openai_file_id = %s")
                     values.append(openai_file_id)
@@ -270,15 +284,17 @@ class Database:
                         sha256, drive_file_id, drive_path, original_name, 
                         s3_key, extension, status,
                         synced_at, drive_created_time, drive_modified_time, drive_mime_type,
+                        original_file_size, processed_text_size,
                         openai_file_id, vector_store_id,
                         error_message, error_type, retry_count, last_error_at,
                         created_at, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     sha256, drive_file_id, drive_path, original_name,
                     s3_key, extension, status.value,
                     now if status == FileStatus.SYNCED else None,
                     drive_created_time, drive_modified_time, drive_mime_type,
+                    original_file_size, processed_text_size,
                     openai_file_id, vector_store_id,
                     error_message, error_type, 0, 
                     now if error_message else None,

@@ -567,7 +567,8 @@ def _process_single_file(
                 sha256=sha256,
                 s3_key=s3_key,
                 status=FileStatus.PROCESSED,
-                extension=ext
+                extension=ext,
+                processed_text_size=len(text_content)
             )
             
             return sha256

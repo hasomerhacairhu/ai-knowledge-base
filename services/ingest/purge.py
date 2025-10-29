@@ -159,12 +159,12 @@ def purge_s3(s3_client: S3Client, bucket: str, dry_run: bool = False) -> int:
         return 0
 
 
-def purge_database(db_path: str, dry_run: bool = False) -> bool:
+def purge_database(database: 'Database', dry_run: bool = False) -> bool:
     """
-    Delete the database file
+    Delete all data from database tables
     
     Args:
-        db_path: Path to database file
+        database: Database instance
         dry_run: If True, only show what would be deleted
     
     Returns:
@@ -176,32 +176,36 @@ def purge_database(db_path: str, dry_run: bool = False) -> bool:
         logger.info("   [DRY RUN MODE - No changes will be made]")
     logger.info("="*80)
     
-    db_file = Path(db_path)
-    
-    if not db_file.exists():
-        logger.info(f"\n⚠️  Database file does not exist: {db_path}")
-        return True
-    
     try:
+        # Get current statistics before purging
+        stats = database.get_statistics()
+        total_files = stats.get('total', 0)
+        
+        if total_files == 0:
+            logger.info(f"\n⚠️  Database is already empty")
+            return True
+        
         if dry_run:
-            logger.info(f"\n   Would delete database file: {db_path}")
-            file_size = db_file.stat().st_size
-            logger.info(f"   File size: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
+            logger.info(f"\n   Would delete {total_files} records from database")
+            logger.info(f"   Status breakdown:")
+            for status, count in stats.items():
+                if status != 'total' and status != 'with_errors' and count > 0:
+                    logger.info(f"      - {status}: {count}")
         else:
-            # Get file size before deletion
-            file_size = db_file.stat().st_size
+            # Delete all data from tables
+            with database.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM drive_file_mapping")
+                cursor.execute("DELETE FROM file_state")
+                cursor.execute("DELETE FROM checkpoint")
             
-            # Delete the file
-            db_file.unlink()
-            
-            logger.info(f"\n✅ Deleted database file: {db_path}")
-            logger.info(f"   File size: {file_size:,} bytes ({file_size / 1024 / 1024:.2f} MB)")
+            logger.info(f"\n✅ Deleted {total_files} records from database")
         
         logger.info("="*80)
         return True
     
     except Exception as e:
-        logger.error(f"❌ Error deleting database: {e}")
+        logger.error(f"❌ Error purging database: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -209,7 +213,7 @@ def purge_database(db_path: str, dry_run: bool = False) -> bool:
 
 def purge_vector_store(openai_client: OpenAI, vector_store_id: str, dry_run: bool = False) -> int:
     """
-    Delete all files from OpenAI Vector Store
+    Delete all files from OpenAI Vector Store AND from OpenAI file storage
     
     Args:
         openai_client: Initialized OpenAI client
@@ -220,7 +224,7 @@ def purge_vector_store(openai_client: OpenAI, vector_store_id: str, dry_run: boo
         Number of files deleted
     """
     logger.info("\n" + "="*80)
-    logger.info("🗑️  PURGING VECTOR STORE")
+    logger.info("🗑️  PURGING VECTOR STORE AND FILES")
     if dry_run:
         logger.info("   [DRY RUN MODE - No changes will be made]")
     logger.info("="*80)
@@ -228,7 +232,8 @@ def purge_vector_store(openai_client: OpenAI, vector_store_id: str, dry_run: boo
     
     try:
         total_files = 0
-        deleted_count = 0
+        deleted_from_vs = 0
+        deleted_files = 0
         
         # List all files in the vector store
         logger.info(f"\n📋 Listing files in Vector Store...")
@@ -263,21 +268,31 @@ def purge_vector_store(openai_client: OpenAI, vector_store_id: str, dry_run: boo
                 
                 if dry_run:
                     for file in files:
-                        logger.debug(f"   - Would delete file: {file.id}")
+                        logger.debug(f"   - Would delete from vector store and file storage: {file.id}")
                 else:
-                    # Delete each file
+                    # Delete each file from vector store AND file storage
                     for file in files:
                         try:
+                            # Step 1: Remove from vector store
                             openai_client.vector_stores.files.delete(
                                 vector_store_id=vector_store_id,
                                 file_id=file.id
                             )
-                            deleted_count += 1
-                            logger.debug(f"   - Deleted file: {file.id}")
+                            deleted_from_vs += 1
+                            logger.debug(f"   - Removed from vector store: {file.id}")
+                            
+                            # Step 2: Delete the actual file from OpenAI file storage
+                            try:
+                                openai_client.files.delete(file.id)
+                                deleted_files += 1
+                                logger.debug(f"   - Deleted file from storage: {file.id}")
+                            except Exception as e:
+                                logger.warning(f"   ⚠️  Failed to delete file {file.id} from storage (may already be deleted): {e}")
+                            
                         except Exception as e:
-                            logger.error(f"   ❌ Failed to delete file {file.id}: {e}")
+                            logger.error(f"   ❌ Failed to remove file {file.id} from vector store: {e}")
                     
-                    logger.info(f"   ✅ Deleted {len(files)} files from batch {batch_num}")
+                    logger.info(f"   ✅ Processed {len(files)} files from batch {batch_num} ({deleted_from_vs} removed from VS, {deleted_files} deleted from storage)")
                 
                 # Get the last file ID for pagination
                 if has_more:
@@ -285,12 +300,13 @@ def purge_vector_store(openai_client: OpenAI, vector_store_id: str, dry_run: boo
         
         logger.info("\n" + "="*80)
         if dry_run:
-            logger.info(f"✅ Would delete {total_files} files from Vector Store")
+            logger.info(f"✅ Would delete {total_files} files from Vector Store and file storage")
         else:
-            logger.info(f"✅ Deleted {deleted_count} files from Vector Store")
+            logger.info(f"✅ Removed {deleted_from_vs} files from Vector Store")
+            logger.info(f"✅ Deleted {deleted_files} files from OpenAI file storage")
         logger.info("="*80)
         
-        return deleted_count if not dry_run else total_files
+        return deleted_files if not dry_run else total_files
     
     except Exception as e:
         logger.error(f"❌ Error purging Vector Store: {e}")
@@ -382,14 +398,14 @@ Examples:
         if purge_s3_flag and purge_db_flag and purge_vector_store_flag:
             print("\nThis will DELETE ALL data from:")
             print(f"  - S3 Bucket: {config.s3_bucket}")
-            print(f"  - Database: {config.database_path}")
+            print(f"  - Database: {config.postgres_db} on {config.postgres_host}")
             print(f"  - Vector Store: {config.vector_store_id}")
         else:
             print("\nThis will DELETE data from:")
             if purge_s3_flag:
                 print(f"  - S3 Bucket: {config.s3_bucket}")
             if purge_db_flag:
-                print(f"  - Database: {config.database_path}")
+                print(f"  - Database: {config.postgres_db} on {config.postgres_host}")
             if purge_vector_store_flag:
                 print(f"  - Vector Store: {config.vector_store_id}")
         
@@ -415,6 +431,16 @@ Examples:
     if purge_vector_store_flag:
         openai_client = OpenAI(api_key=config.openai_api_key)
     
+    if purge_db_flag:
+        from src.database import Database
+        database = Database(
+            host=config.postgres_host,
+            port=config.postgres_port,
+            database=config.postgres_db,
+            user=config.postgres_user,
+            password=config.postgres_password
+        )
+    
     # Execute purge operations
     print("\n" + "="*80)
     print("🚀 STARTING PURGE OPERATION")
@@ -426,17 +452,14 @@ Examples:
     
     if purge_s3_flag:
         deleted_count = purge_s3(s3_client, config.s3_bucket, dry_run=args.dry_run)
-        if deleted_count == 0 and not args.dry_run:
-            success = False
+        # Don't mark as failure if S3 was already empty
     
     if purge_vector_store_flag:
         deleted_count = purge_vector_store(openai_client, config.vector_store_id, dry_run=args.dry_run)
-        if deleted_count == 0 and not args.dry_run:
-            # Only consider it a failure if there was an error, not if the store was already empty
-            pass
+        # Don't mark as failure if vector store was already empty
     
     if purge_db_flag:
-        db_success = purge_database(config.database_path, dry_run=args.dry_run)
+        db_success = purge_database(database, dry_run=args.dry_run)
         if not db_success:
             success = False
     

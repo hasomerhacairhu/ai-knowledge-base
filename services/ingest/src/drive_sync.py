@@ -245,6 +245,7 @@ class DriveSync:
         mime_type = file_meta['mimeType']
         modified_time = file_meta['modifiedTime']
         created_time = file_meta.get('createdTime', modified_time)
+        file_size = int(file_meta.get('size', 0))  # Google Docs don't have 'size' field
         
         # STEP 1: Check if Drive ID already exists in mapping table (FAST - no download needed)
         drive_mapping = self.database.get_drive_mapping(file_id)
@@ -296,7 +297,8 @@ class DriveSync:
                             original_name=file_meta['name'],
                             drive_created_time=created_time,
                             drive_modified_time=modified_time,
-                            drive_mime_type=mime_type
+                            drive_mime_type=mime_type,
+                            original_file_size=file_size
                         )
                     except Exception as e:
                         logger.debug(f"Failed to update metadata: {e}")
@@ -424,7 +426,8 @@ class DriveSync:
                     extension=extension,
                     drive_created_time=created_time,
                     drive_modified_time=modified_time,
-                    drive_mime_type=mime_type
+                    drive_mime_type=mime_type,
+                    original_file_size=file_size
                 )
                 
                 # Also save the Drive file mapping
@@ -456,6 +459,7 @@ class DriveSync:
                         drive_created_time=created_time,
                         drive_modified_time=modified_time,
                         drive_mime_type=mime_type,
+                        original_file_size=file_size,
                         error_message=str(e),
                         error_type=type(e).__name__
                     )
@@ -551,9 +555,10 @@ class DriveSync:
                             pbar.write(f"\n✅ Reached target of {max_files} total files, stopping")
                             file_batch = []
                             break
-                        # Limit batch size to remaining slots to avoid overshooting
-                        # Note: We count all successfully processed files (new + skipped)
-                        # Submit the full batch but stop processing after hitting limit
+                        # Limit batch size to avoid submitting too many files
+                        if remaining_slots < len(file_batch):
+                            # Only submit what we need, save the rest for next iteration
+                            file_batch = file_batch[:remaining_slots]
                     
                     # Submit all tasks in batch
                     future_to_file = {
