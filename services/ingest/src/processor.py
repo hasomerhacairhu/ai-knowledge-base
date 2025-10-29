@@ -339,12 +339,14 @@ def _process_single_file(
             log(f"   ⏭️  Already processed (status: {file_record['status']}), skipping")
             return sha256
         
-        # Mark as PROCESSING in database
+        # Mark as PROCESSING in database (clear any previous errors)
         if not dry_run:
             database.upsert_file(
                 sha256=sha256,
                 s3_key=s3_key,
-                status=FileStatus.PROCESSING
+                status=FileStatus.PROCESSING,
+                error_message="",  # Clear previous errors when retrying
+                error_type=""
             )
         
         if dry_run:

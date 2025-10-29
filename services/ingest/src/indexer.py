@@ -149,12 +149,14 @@ class VectorStoreIndexer:
             return f"file-{sha256[:8]}-dryrun"
         
         try:
-            # Mark as INDEXING in database (prevents race conditions)
+            # Mark as INDEXING in database (prevents race conditions, clear previous errors)
             log("   🔒 Marking as indexing in database...")
             self.database.upsert_file(
                 sha256=sha256,
                 s3_key=file_record["s3_key"],
-                status=FileStatus.INDEXING
+                status=FileStatus.INDEXING,
+                error_message="",  # Clear previous errors when retrying
+                error_type=""
             )
             
             # Download text content - STREAM for memory efficiency

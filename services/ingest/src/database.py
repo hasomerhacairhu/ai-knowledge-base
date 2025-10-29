@@ -256,7 +256,7 @@ class Database:
                     values.extend([error_message, error_type, now])
                 elif error_message == "" or (status in [FileStatus.PROCESSED, FileStatus.INDEXED] and error_message is None):
                     # Clear errors on success (empty string means explicit clear, or successful status with None)
-                    updates.extend(["error_message = NULL", "error_type = NULL"])
+                    updates.extend(["error_message = NULL", "error_type = NULL", "retry_count = 0"])
                 
                 # Update stage timestamps based on status
                 if status == FileStatus.SYNCED and not existing["synced_at"]:

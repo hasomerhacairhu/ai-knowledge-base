@@ -286,20 +286,23 @@ class DriveSync:
                         }
                         s3_client.update_object_metadata(existing_key, new_metadata)
                         
-                        # Update database with new path/name
+                        # Update database with new path/name (preserve existing status)
                         sha256 = Path(existing_key).stem
-                        self.database.upsert_file(
-                            sha256=sha256,
-                            s3_key=existing_key,
-                            status=FileStatus.SYNCED,
-                            drive_file_id=file_id,
-                            drive_path=file_meta['path'],
-                            original_name=file_meta['name'],
-                            drive_created_time=created_time,
-                            drive_modified_time=modified_time,
-                            drive_mime_type=mime_type,
-                            original_file_size=file_size
-                        )
+                        existing_record = self.database.get_file_by_sha256(sha256)
+                        if existing_record:
+                            current_status = FileStatus(existing_record['status'])
+                            self.database.upsert_file(
+                                sha256=sha256,
+                                s3_key=existing_key,
+                                status=current_status,  # Preserve current status
+                                drive_file_id=file_id,
+                                drive_path=file_meta['path'],
+                                original_name=file_meta['name'],
+                                drive_created_time=created_time,
+                                drive_modified_time=modified_time,
+                                drive_mime_type=mime_type,
+                                original_file_size=file_size
+                            )
                     except Exception as e:
                         logger.debug(f"Failed to update metadata: {e}")
                 
