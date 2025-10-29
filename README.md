@@ -278,14 +278,22 @@ uv run python main.py --verbose sync
 
 Clean up all data (⚠️ destructive):
 ```bash
+# Dry run to see what would be deleted
+uv run python purge.py --dry-run
+
+# Delete everything (requires confirmation)
 uv run python purge.py
+
+# Delete everything without confirmation (dangerous!)
+uv run python purge.py --yes
 ```
 
 Options:
-- `--all` - Delete everything (database, S3, OpenAI)
-- `--s3` - Delete only S3 objects
-- `--openai` - Delete only OpenAI files
-- `--db` - Delete only database
+- `--dry-run` - Show what would be deleted without making changes
+- `--s3-only` - Delete only S3 bucket contents
+- `--db-only` - Delete only database file
+- `--vector-store-only` - Delete only Vector Store files
+- `--yes` - Skip confirmation prompt
 
 ## 🐳 Docker Deployment
 

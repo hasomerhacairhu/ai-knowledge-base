@@ -1,5 +1,5 @@
 """
-Purge script - Deletes all data from S3 bucket and database
+Purge script - Deletes all data from S3 bucket, database, and Vector Store
 
 WARNING: This is a destructive operation that cannot be undone!
 Use with caution, especially in production environments.
@@ -16,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from src.config import Config
 from src.database import Database
 from src.utils import S3Client, setup_logging
+
+from openai import OpenAI
 
 logger = setup_logging(__name__)
 
@@ -205,6 +207,99 @@ def purge_database(db_path: str, dry_run: bool = False) -> bool:
         return False
 
 
+def purge_vector_store(openai_client: OpenAI, vector_store_id: str, dry_run: bool = False) -> int:
+    """
+    Delete all files from OpenAI Vector Store
+    
+    Args:
+        openai_client: Initialized OpenAI client
+        vector_store_id: Vector Store ID
+        dry_run: If True, only show what would be deleted
+    
+    Returns:
+        Number of files deleted
+    """
+    logger.info("\n" + "="*80)
+    logger.info("🗑️  PURGING VECTOR STORE")
+    if dry_run:
+        logger.info("   [DRY RUN MODE - No changes will be made]")
+    logger.info("="*80)
+    logger.info(f"\n📋 Vector Store ID: {vector_store_id}")
+    
+    try:
+        total_files = 0
+        deleted_count = 0
+        
+        # List all files in the vector store
+        logger.info(f"\n📋 Listing files in Vector Store...")
+        
+        # Use pagination to list all files
+        has_more = True
+        after = None
+        batch_num = 0
+        
+        while has_more:
+            batch_num += 1
+            
+            # List files with pagination
+            if after:
+                response = openai_client.vector_stores.files.list(
+                    vector_store_id=vector_store_id,
+                    limit=100,  # Max allowed by API
+                    after=after
+                )
+            else:
+                response = openai_client.vector_stores.files.list(
+                    vector_store_id=vector_store_id,
+                    limit=100
+                )
+            
+            files = response.data
+            has_more = response.has_more
+            
+            if files:
+                total_files += len(files)
+                logger.info(f"   Batch {batch_num}: Found {len(files)} files")
+                
+                if dry_run:
+                    for file in files:
+                        logger.debug(f"   - Would delete file: {file.id}")
+                else:
+                    # Delete each file
+                    for file in files:
+                        try:
+                            openai_client.vector_stores.files.delete(
+                                vector_store_id=vector_store_id,
+                                file_id=file.id
+                            )
+                            deleted_count += 1
+                            logger.debug(f"   - Deleted file: {file.id}")
+                        except Exception as e:
+                            logger.error(f"   ❌ Failed to delete file {file.id}: {e}")
+                    
+                    logger.info(f"   ✅ Deleted {len(files)} files from batch {batch_num}")
+                
+                # Get the last file ID for pagination
+                if has_more:
+                    after = files[-1].id
+        
+        logger.info("\n" + "="*80)
+        if dry_run:
+            logger.info(f"✅ Would delete {total_files} files from Vector Store")
+        else:
+            logger.info(f"✅ Deleted {deleted_count} files from Vector Store")
+        logger.info("="*80)
+        
+        return deleted_count if not dry_run else total_files
+    
+    except Exception as e:
+        logger.error(f"❌ Error purging Vector Store: {e}")
+        import traceback
+        traceback.print_exc()
+        return 0
+
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Purge script - Delete all data from S3 bucket and database",
@@ -221,6 +316,9 @@ Examples:
 
   # Purge only database
   python purge.py --db-only
+
+  # Purge only Vector Store
+  python purge.py --vector-store-only
 
   # Purge everything (requires confirmation)
   python purge.py
@@ -239,13 +337,19 @@ Examples:
     parser.add_argument(
         "--s3-only",
         action="store_true",
-        help="Only purge S3 bucket, leave database intact"
+        help="Only purge S3 bucket, leave database and Vector Store intact"
     )
     
     parser.add_argument(
         "--db-only",
         action="store_true",
-        help="Only purge database, leave S3 bucket intact"
+        help="Only purge database, leave S3 bucket and Vector Store intact"
+    )
+    
+    parser.add_argument(
+        "--vector-store-only",
+        action="store_true",
+        help="Only purge Vector Store, leave S3 bucket and database intact"
     )
     
     parser.add_argument(
@@ -265,8 +369,9 @@ Examples:
         sys.exit(1)
     
     # Determine what to purge
-    purge_s3_flag = not args.db_only
-    purge_db_flag = not args.s3_only
+    purge_s3_flag = not (args.db_only or args.vector_store_only)
+    purge_db_flag = not (args.s3_only or args.vector_store_only)
+    purge_vector_store_flag = not (args.s3_only or args.db_only)
     
     # Show warning and ask for confirmation
     if not args.dry_run and not args.yes:
@@ -274,14 +379,19 @@ Examples:
         print("⚠️  WARNING: DESTRUCTIVE OPERATION")
         print("="*80)
         
-        if purge_s3_flag and purge_db_flag:
+        if purge_s3_flag and purge_db_flag and purge_vector_store_flag:
             print("\nThis will DELETE ALL data from:")
             print(f"  - S3 Bucket: {config.s3_bucket}")
             print(f"  - Database: {config.database_path}")
-        elif purge_s3_flag:
-            print(f"\nThis will DELETE ALL objects from S3 bucket: {config.s3_bucket}")
-        elif purge_db_flag:
-            print(f"\nThis will DELETE the database file: {config.database_path}")
+            print(f"  - Vector Store: {config.vector_store_id}")
+        else:
+            print("\nThis will DELETE data from:")
+            if purge_s3_flag:
+                print(f"  - S3 Bucket: {config.s3_bucket}")
+            if purge_db_flag:
+                print(f"  - Database: {config.database_path}")
+            if purge_vector_store_flag:
+                print(f"  - Vector Store: {config.vector_store_id}")
         
         print("\n⚠️  This operation CANNOT be undone!")
         print("="*80)
@@ -302,6 +412,9 @@ Examples:
             region=config.s3_region
         )
     
+    if purge_vector_store_flag:
+        openai_client = OpenAI(api_key=config.openai_api_key)
+    
     # Execute purge operations
     print("\n" + "="*80)
     print("🚀 STARTING PURGE OPERATION")
@@ -315,6 +428,12 @@ Examples:
         deleted_count = purge_s3(s3_client, config.s3_bucket, dry_run=args.dry_run)
         if deleted_count == 0 and not args.dry_run:
             success = False
+    
+    if purge_vector_store_flag:
+        deleted_count = purge_vector_store(openai_client, config.vector_store_id, dry_run=args.dry_run)
+        if deleted_count == 0 and not args.dry_run:
+            # Only consider it a failure if there was an error, not if the store was already empty
+            pass
     
     if purge_db_flag:
         db_success = purge_database(config.database_path, dry_run=args.dry_run)
