@@ -191,13 +191,15 @@ class VectorStoreIndexer:
             retry_with_exponential_backoff(add_to_vector_store)
             log("   ✅ Added to Vector Store")
             
-            # Mark as INDEXED in database (atomic operation)
+            # Mark as INDEXED in database (atomic operation, clear any previous errors)
             self.database.upsert_file(
                 sha256=sha256,
                 s3_key=file_record["s3_key"],
                 status=FileStatus.INDEXED,
                 openai_file_id=file_id,
-                vector_store_id=self.config.vector_store_id
+                vector_store_id=self.config.vector_store_id,
+                error_message="",  # Empty string to clear error
+                error_type=""
             )
             
             return file_id

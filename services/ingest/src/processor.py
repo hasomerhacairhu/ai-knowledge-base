@@ -562,13 +562,15 @@ def _process_single_file(
             log(f"      - {text_key}")
             log(f"      - {meta_key}")
             
-            # Mark as PROCESSED in database
+            # Mark as PROCESSED in database (clear any previous errors)
             database.upsert_file(
                 sha256=sha256,
                 s3_key=s3_key,
                 status=FileStatus.PROCESSED,
                 extension=ext,
-                processed_text_size=len(text_content)
+                processed_text_size=len(text_content),
+                error_message="",  # Empty string to clear error
+                error_type=""
             )
             
             return sha256

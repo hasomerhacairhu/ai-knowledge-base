@@ -249,10 +249,14 @@ class Database:
                     values.append(vector_store_id)
                 
                 # Handle error tracking
-                if error_message is not None:
+                if error_message is not None and error_message != "":
+                    # Set error (increment retry count)
                     updates.extend(["error_message = %s", "error_type = %s", 
                                   "last_error_at = %s", "retry_count = retry_count + 1"])
                     values.extend([error_message, error_type, now])
+                elif error_message == "" or (status in [FileStatus.PROCESSED, FileStatus.INDEXED] and error_message is None):
+                    # Clear errors on success (empty string means explicit clear, or successful status with None)
+                    updates.extend(["error_message = NULL", "error_type = NULL"])
                 
                 # Update stage timestamps based on status
                 if status == FileStatus.SYNCED and not existing["synced_at"]:
