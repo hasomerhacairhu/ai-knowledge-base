@@ -5,7 +5,10 @@ FastAPI service for semantic search over the vector store
 """
 
 import os
-import sqlite3
+import sys
+import logging
+import psycopg2
+from psycopg2 import pool
 import boto3
 from typing import Dict, List, Optional, Any
 from contextlib import asynccontextmanager
@@ -18,6 +21,14 @@ from botocore.config import Config
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
 
 
 # Request/Response Models
@@ -33,14 +44,17 @@ class ContentItem(BaseModel):
 
 
 class FileMetadata(BaseModel):
-    original_name: Optional[str] = None
-    drive_path: Optional[str] = None
-    mime_type: Optional[str] = None
-    drive_file_id: Optional[str] = None
-    drive_url: Optional[str] = None
-    s3_key: Optional[str] = None
-    s3_presigned_url: Optional[str] = None
-    sha256: Optional[str] = None
+    original_name: str
+    drive_path: str
+    mime_type: str
+    drive_file_id: str
+    drive_url: str
+    s3_key: str
+    s3_presigned_url: str
+    txt_file_url: Optional[str] = None
+    file_size_bytes: Optional[int] = None
+    txt_size_bytes: Optional[int] = None
+    sha256: str
 
 
 class SearchResult(BaseModel):
@@ -63,13 +77,13 @@ class SearchResponse(BaseModel):
 s3_client = None
 openai_headers = None
 vector_store_id = None
-database_path = None
+db_pool = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize clients on startup"""
-    global s3_client, openai_headers, vector_store_id, database_path
+    global s3_client, openai_headers, vector_store_id, db_pool
     
     # Initialize S3 client
     config = Config(
@@ -100,12 +114,30 @@ async def lifespan(app: FastAPI):
     if not vector_store_id:
         raise ValueError("VECTOR_STORE_ID not set")
     
-    # Database path
-    database_path = os.getenv("DATABASE_PATH", "/app/data/pipeline.db")
+    # Initialize PostgreSQL connection pool
+    try:
+        db_pool = psycopg2.pool.SimpleConnectionPool(
+            minconn=1,
+            maxconn=10,
+            host=os.getenv("POSTGRES_HOST", "postgres"),
+            port=int(os.getenv("POSTGRES_PORT", "5432")),
+            database=os.getenv("POSTGRES_DB", "ai_knowledge_base"),
+            user=os.getenv("POSTGRES_USER", "postgres"),
+            password=os.getenv("POSTGRES_PASSWORD", "postgres")
+        )
+        logger.info("✅ PostgreSQL connection pool initialized")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize PostgreSQL connection pool: {e}")
+        raise ValueError(f"Failed to initialize PostgreSQL connection pool: {e}")
     
-    print("✅ API service initialized")
+    logger.info("✅ API service initialized")
     yield
-    print("🛑 API service shutting down")
+    
+    # Cleanup
+    if db_pool:
+        db_pool.closeall()
+        logger.info("🛑 PostgreSQL connection pool closed")
+    logger.info("🛑 API service shutting down")
 
 
 # Initialize FastAPI app
@@ -117,9 +149,10 @@ app = FastAPI(
 )
 
 # Add CORS middleware
+allowed_origins = os.getenv("CORS_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -128,7 +161,7 @@ app.add_middleware(
 
 def get_file_metadata(sha256_hash: str) -> Optional[FileMetadata]:
     """
-    Look up file metadata from database by SHA256 hash.
+    Look up file metadata from PostgreSQL database by SHA256 hash.
     
     Args:
         sha256_hash: SHA256 hash extracted from OpenAI filename
@@ -136,8 +169,9 @@ def get_file_metadata(sha256_hash: str) -> Optional[FileMetadata]:
     Returns:
         FileMetadata object or None
     """
+    conn = None
     try:
-        conn = sqlite3.connect(database_path)
+        conn = db_pool.getconn()
         cursor = conn.cursor()
         
         cursor.execute('''
@@ -147,53 +181,87 @@ def get_file_metadata(sha256_hash: str) -> Optional[FileMetadata]:
                 dfm.drive_mime_type,
                 dfm.drive_file_id,
                 fs.s3_key,
-                fs.sha256
+                fs.sha256,
+                fs.original_file_size
             FROM drive_file_mapping dfm
             JOIN file_state fs ON dfm.sha256 = fs.sha256
-            WHERE fs.sha256 = ?
+            WHERE fs.sha256 = %s
             LIMIT 1
         ''', (sha256_hash,))
         
         result = cursor.fetchone()
-        conn.close()
         
         if result:
-            original_name, drive_path, mime_type, drive_file_id, s3_key, sha256 = result
+            original_name, drive_path, mime_type, drive_file_id, s3_key, sha256, file_size_bytes = result
             
             # Generate Drive URL
             drive_url = f"https://drive.google.com/file/d/{drive_file_id}/view" if drive_file_id else None
             
-            # Generate S3 presigned URL
+            # Generate S3 presigned URL for original file (7 days)
             s3_presigned_url = None
+            txt_file_url = None
+            txt_size_bytes = None
+            
             if s3_key:
                 try:
+                    # Original file URL (7 days = 604800 seconds)
                     s3_presigned_url = s3_client.generate_presigned_url(
                         'get_object',
                         Params={
                             'Bucket': os.getenv("S3_BUCKET"),
                             'Key': s3_key
                         },
-                        ExpiresIn=3600  # URL valid for 1 hour
+                        ExpiresIn=604800
                     )
+                    
+                    # Processed txt file URL (7 days)
+                    txt_key = f"{s3_key}.txt"
+                    txt_file_url = s3_client.generate_presigned_url(
+                        'get_object',
+                        Params={
+                            'Bucket': os.getenv("S3_BUCKET"),
+                            'Key': txt_key
+                        },
+                        ExpiresIn=604800
+                    )
+                    
+                    # Get txt file size from S3
+                    try:
+                        head_response = s3_client.head_object(
+                            Bucket=os.getenv("S3_BUCKET"),
+                            Key=txt_key
+                        )
+                        txt_size_bytes = head_response.get('ContentLength')
+                    except Exception:
+                        # Txt file might not exist yet
+                        logger.debug(f"Processed txt file not found for s3_key: {s3_key}")
+                        pass
+                        
                 except Exception as e:
-                    print(f"⚠️  Could not generate S3 URL: {e}")
+                    logger.error(f"⚠️  Could not generate S3 URL for {sha256_hash}: {e}")
             
             return FileMetadata(
                 original_name=original_name,
-                drive_path=drive_path,
-                mime_type=mime_type,
-                drive_file_id=drive_file_id,
-                drive_url=drive_url,
+                drive_path=drive_path or "",
+                mime_type=mime_type or "",
+                drive_file_id=drive_file_id or "",
+                drive_url=drive_url or "",
                 s3_key=s3_key,
-                s3_presigned_url=s3_presigned_url,
+                s3_presigned_url=s3_presigned_url or "",
+                txt_file_url=txt_file_url,
+                file_size_bytes=file_size_bytes,
+                txt_size_bytes=txt_size_bytes,
                 sha256=sha256
             )
         
         return None
         
     except Exception as e:
-        print(f"⚠️  Database error: {e}")
+        logger.error(f"⚠️  Database error for sha256 {sha256_hash}: {e}")
         return None
+    finally:
+        if conn:
+            db_pool.putconn(conn)
 
 
 async def vector_store_search(
@@ -243,10 +311,20 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    db_status = "connected"
+    try:
+        conn = db_pool.getconn()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.close()
+        db_pool.putconn(conn)
+    except Exception as e:
+        db_status = f"error: {str(e)}"
+    
     return {
-        "status": "healthy",
+        "status": "healthy" if db_status == "connected" else "degraded",
         "vector_store_id": vector_store_id,
-        "database": os.path.exists(database_path)
+        "database": db_status
     }
 
 
@@ -262,6 +340,8 @@ async def search(request: SearchRequest):
         SearchResponse with enriched results
     """
     try:
+        logger.info(f"Search request: query='{request.query[:100]}', max_results={request.max_results}")
+        
         # Perform vector store search
         raw_results = await vector_store_search(
             query=request.query,
@@ -299,6 +379,8 @@ async def search(request: SearchRequest):
                 metadata=metadata
             ))
         
+        logger.info(f"Search completed: {len(enriched_results)} results found")
+        
         return SearchResponse(
             query=request.query,
             search_query=raw_results.get('search_query', request.query),
@@ -307,11 +389,13 @@ async def search(request: SearchRequest):
         )
         
     except httpx.HTTPStatusError as e:
+        logger.error(f"OpenAI API error: {e.response.status_code} - {e.response.text}")
         raise HTTPException(
             status_code=e.response.status_code,
             detail=f"OpenAI API error: {e.response.text}"
         )
     except Exception as e:
+        logger.error(f"Search error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

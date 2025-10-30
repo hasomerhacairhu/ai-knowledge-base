@@ -3,9 +3,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (including PostgreSQL client libraries)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libmagic1 \
+    libpq5 \
+    libpq-dev \
+    gcc \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
