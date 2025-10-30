@@ -399,7 +399,10 @@ async def search(request: SearchRequest):
 
 @app.get("/api/search", response_model=SearchResponse)
 async def search_get(
-    q: str = Query(..., description="Search query or pipe-separated queries (e.g., 'query1|query2')"),
+    q: str = Query(..., description="Primary search query"),
+    q1: Optional[str] = Query(None, description="Additional search query 1"),
+    q2: Optional[str] = Query(None, description="Additional search query 2"),
+    q3: Optional[str] = Query(None, description="Additional search query 3"),
     max_results: int = Query(10, ge=1, le=50, description="Maximum results"),
     rewrite: bool = Query(True, description="Rewrite query for search"),
     multilingual: bool = Query(True, description="Enable multilingual search"),
@@ -409,7 +412,8 @@ async def search_get(
     GET endpoint for search (convenience method)
     
     Args:
-        q: Search query or pipe-separated queries (e.g., "query1|query2")
+        q: Primary search query (required)
+        q1, q2, q3: Additional search queries (optional)
         max_results: Maximum number of results
         rewrite: Whether to rewrite the query
         multilingual: Enable multilingual search (searches in both languages)
@@ -417,13 +421,23 @@ async def search_get(
         
     Returns:
         SearchResponse with enriched results
+        
+    Examples:
+        /api/search?q=Holocaust education&max_results=5
+        /api/search?q=Holocaust education&q1=Holokauszt oktatás&max_results=10
+        /api/search?q=leadership&q1=vezetés&q2=vezető képzés&max_results=15
     """
-    # Split pipe-separated queries if provided as string
-    # Using pipe (|) instead of comma to avoid URL encoding issues
-    queries = [q.strip() for q in q.split('|')] if '|' in q else q
+    # Collect all non-None queries
+    queries = [q]
+    if q1:
+        queries.append(q1)
+    if q2:
+        queries.append(q2)
+    if q3:
+        queries.append(q3)
     
     request = SearchRequest(
-        query=queries,
+        query=queries if len(queries) > 1 else q,
         max_results=max_results,
         multilingual=multilingual,
         merge_results=merge_results,
