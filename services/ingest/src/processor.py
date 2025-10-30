@@ -202,11 +202,14 @@ def _partition_in_process(args_tuple: tuple) -> List:
                 return fast_elements
             
             # Fallback to OCR with Tesseract
-            # Tesseract supports multiple languages (e.g., "eng+hun" for English+Hungarian)
+            # Split language string if needed (e.g., "eng+hun" -> ["eng", "hun"])
+            lang_list = lang.split('+') if isinstance(lang, str) and '+' in lang else ([lang] if isinstance(lang, str) else lang)
+            
             return partition_pdf(
                 path,
-                strategy="ocr_only",
-                languages=[lang],  # Tesseract language codes (e.g., "eng+hun")
+                strategy="hi_res",  # Use hi_res strategy which includes OCR
+                languages=lang_list,  # List of language codes (e.g., ["eng", "hun"])
+                infer_table_structure=True,  # Better structure detection
                 include_page_breaks=True
             )
         else:
