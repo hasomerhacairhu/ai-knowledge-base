@@ -45,30 +45,20 @@ class ContentItem(BaseModel):
 
 class FileMetadata(BaseModel):
     original_name: str
-    drive_path: str
-    mime_type: str
-    drive_file_id: str
-    drive_url: str
-    s3_key: str
     s3_presigned_url: str
     txt_file_url: Optional[str] = None
-    file_size_bytes: Optional[int] = None
     txt_size_bytes: Optional[int] = None
     sha256: str
 
 
 class SearchResult(BaseModel):
-    filename: str
-    file_id: str
     score: float
     content: List[ContentItem]
-    attributes: Optional[Dict] = None
     metadata: Optional[FileMetadata] = None
 
 
 class SearchResponse(BaseModel):
     query: str
-    search_query: Union[str, List[str]]  # OpenAI can return either string or list
     results: List[SearchResult]
     count: int
 
@@ -179,12 +169,8 @@ def get_file_metadata(sha256_hash: str) -> Optional[FileMetadata]:
         cursor.execute('''
             SELECT 
                 dfm.original_name,
-                dfm.drive_path,
-                dfm.drive_mime_type,
-                dfm.drive_file_id,
                 fs.s3_key,
-                fs.sha256,
-                fs.original_file_size
+                fs.sha256
             FROM drive_file_mapping dfm
             JOIN file_state fs ON dfm.sha256 = fs.sha256
             WHERE fs.sha256 = %s
@@ -194,10 +180,7 @@ def get_file_metadata(sha256_hash: str) -> Optional[FileMetadata]:
         result = cursor.fetchone()
         
         if result:
-            original_name, drive_path, mime_type, drive_file_id, s3_key, sha256, file_size_bytes = result
-            
-            # Generate Drive URL
-            drive_url = f"https://drive.google.com/file/d/{drive_file_id}/view" if drive_file_id else None
+            original_name, s3_key, sha256 = result
             
             # Generate S3 presigned URL for original file (7 days)
             s3_presigned_url = None
@@ -244,14 +227,8 @@ def get_file_metadata(sha256_hash: str) -> Optional[FileMetadata]:
             
             return FileMetadata(
                 original_name=original_name,
-                drive_path=drive_path or "",
-                mime_type=mime_type or "",
-                drive_file_id=drive_file_id or "",
-                drive_url=drive_url or "",
-                s3_key=s3_key,
                 s3_presigned_url=s3_presigned_url or "",
                 txt_file_url=txt_file_url,
-                file_size_bytes=file_size_bytes,
                 txt_size_bytes=txt_size_bytes,
                 sha256=sha256
             )
@@ -373,11 +350,8 @@ async def search(request: SearchRequest):
                     ))
             
             enriched_results.append(SearchResult(
-                filename=filename,
-                file_id=item.get('file_id', ''),
                 score=item.get('score', 0.0),
                 content=content,
-                attributes=item.get('attributes'),
                 metadata=metadata
             ))
         
@@ -385,7 +359,6 @@ async def search(request: SearchRequest):
         
         return SearchResponse(
             query=request.query,
-            search_query=raw_results.get('search_query', request.query),
             results=enriched_results,
             count=len(enriched_results)
         )
