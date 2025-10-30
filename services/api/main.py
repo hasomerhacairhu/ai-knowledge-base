@@ -33,10 +33,11 @@ logger = logging.getLogger(__name__)
 
 # Request/Response Models
 class SearchRequest(BaseModel):
-    query: str = Field(..., description="Search query")
-    max_results: int = Field(10, ge=1, le=50, description="Maximum number of results to return")
+    query: Union[str, List[str]] = Field(..., description="Search query or list of queries to merge results")
+    max_results: int = Field(10, ge=1, le=50, description="Maximum number of results to return per query")
     rewrite_query: bool = Field(True, description="Whether to rewrite the query for better search results")
     multilingual: bool = Field(True, description="Enable multilingual search (searches in both Hungarian and English)")
+    merge_results: bool = Field(True, description="Merge and deduplicate results from multiple queries")
 
 
 class ContentItem(BaseModel):
@@ -308,60 +309,81 @@ async def search(request: SearchRequest):
         SearchResponse with enriched results
     """
     try:
-        logger.info(f"Search request: query='{request.query[:100]}', max_results={request.max_results}, multilingual={request.multilingual}")
+        # Convert single query to list for uniform processing
+        queries = [request.query] if isinstance(request.query, str) else request.query
         
-        # Build search query (with multilingual support if enabled)
-        search_query = request.query
-        if request.multilingual:
-            # Enhance query to work across Hungarian and English
-            # This helps retrieve relevant results in both languages
-            search_query = f"{request.query}"
-            logger.info(f"Multilingual search enabled for query: '{search_query[:100]}'")
+        logger.info(f"Search request: {len(queries)} queries, max_results={request.max_results}, multilingual={request.multilingual}")
         
-        # Perform vector store search
-        raw_results = await vector_store_search(
-            query=search_query,
-            max_num_results=request.max_results * 2 if request.multilingual else request.max_results,  # Get more results for diversity
-            rewrite_query=request.rewrite_query
-        )
+        all_results = []
+        seen_sha256 = set()  # Track seen documents for deduplication
         
-        # Enrich results with metadata
-        enriched_results = []
-        for item in raw_results.get('data', []):
-            # Extract SHA256 from filename
-            filename = item.get('filename', '')
-            sha256_hash = filename.replace('.txt', '') if filename.endswith('.txt') else None
+        # Execute search for each query
+        for query_text in queries:
+            logger.info(f"Processing query: '{query_text[:100]}'")
             
-            # Get metadata from database
-            metadata = None
-            if sha256_hash:
-                metadata = get_file_metadata(sha256_hash)
+            # Build search query (with multilingual support if enabled)
+            search_query = query_text
+            if request.multilingual:
+                # Enhance query to work across Hungarian and English
+                search_query = f"{query_text}"
+                logger.info(f"Multilingual search enabled for query: '{search_query[:100]}'")
             
-            # Build content list
-            content = []
-            for content_item in item.get('content', []):
-                if content_item.get('type') == 'text':
-                    content.append(ContentItem(
-                        type='text',
-                        text=content_item.get('text', '')
-                    ))
+            # Perform vector store search
+            raw_results = await vector_store_search(
+                query=search_query,
+                max_num_results=request.max_results * 2 if request.multilingual else request.max_results,
+                rewrite_query=request.rewrite_query
+            )
             
-            enriched_results.append(SearchResult(
-                score=item.get('score', 0.0),
-                content=content,
-                metadata=metadata
-            ))
+            # Enrich results with metadata
+            for item in raw_results.get('data', []):
+                # Extract SHA256 from filename
+                filename = item.get('filename', '')
+                sha256_hash = filename.replace('.txt', '') if filename.endswith('.txt') else None
+                
+                # Skip if already seen (deduplication)
+                if request.merge_results and sha256_hash and sha256_hash in seen_sha256:
+                    continue
+                
+                if sha256_hash:
+                    seen_sha256.add(sha256_hash)
+                
+                # Get metadata from database
+                metadata = None
+                if sha256_hash:
+                    metadata = get_file_metadata(sha256_hash)
+                
+                # Build content list
+                content = []
+                for content_item in item.get('content', []):
+                    if content_item.get('type') == 'text':
+                        content.append(ContentItem(
+                            type='text',
+                            text=content_item.get('text', '')
+                        ))
+                
+                all_results.append(SearchResult(
+                    score=item.get('score', 0.0),
+                    content=content,
+                    metadata=metadata
+                ))
         
-        # If multilingual mode, limit to requested count (we fetched 2x for diversity)
-        if request.multilingual and len(enriched_results) > request.max_results:
-            enriched_results = enriched_results[:request.max_results]
+        # Sort all results by score (highest first)
+        all_results.sort(key=lambda x: x.score, reverse=True)
         
-        logger.info(f"Search completed: {len(enriched_results)} results found")
+        # Limit to requested count
+        if len(all_results) > request.max_results:
+            all_results = all_results[:request.max_results]
+        
+        # Build query string for response
+        query_string = " | ".join(queries) if len(queries) > 1 else queries[0]
+        
+        logger.info(f"Search completed: {len(all_results)} results found from {len(queries)} queries")
         
         return SearchResponse(
-            query=request.query,
-            results=enriched_results,
-            count=len(enriched_results)
+            query=query_string,
+            results=all_results,
+            count=len(all_results)
         )
         
     except httpx.HTTPStatusError as e:
@@ -377,27 +399,33 @@ async def search(request: SearchRequest):
 
 @app.get("/api/search", response_model=SearchResponse)
 async def search_get(
-    q: str = Query(..., description="Search query"),
+    q: Union[str, List[str]] = Query(..., description="Search query or comma-separated queries"),
     max_results: int = Query(10, ge=1, le=50, description="Maximum results"),
     rewrite: bool = Query(True, description="Rewrite query for search"),
-    multilingual: bool = Query(True, description="Enable multilingual search")
+    multilingual: bool = Query(True, description="Enable multilingual search"),
+    merge_results: bool = Query(True, description="Merge and deduplicate results")
 ):
     """
     GET endpoint for search (convenience method)
     
     Args:
-        q: Search query
+        q: Search query or comma-separated queries (e.g., "query1,query2")
         max_results: Maximum number of results
         rewrite: Whether to rewrite the query
         multilingual: Enable multilingual search (searches in both languages)
+        merge_results: Merge and deduplicate results from multiple queries
         
     Returns:
         SearchResponse with enriched results
     """
+    # Split comma-separated queries if provided as string
+    queries = q.split(',') if isinstance(q, str) and ',' in q else q
+    
     request = SearchRequest(
-        query=q,
+        query=queries,
         max_results=max_results,
         multilingual=multilingual,
+        merge_results=merge_results,
         rewrite_query=rewrite
     )
     return await search(request)
