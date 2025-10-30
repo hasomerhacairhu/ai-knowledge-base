@@ -81,6 +81,7 @@ services:
     restart: unless-stopped
     networks:
       - ai-kb-network
+      - apps
 
   minio:
     image: minio/minio:latest
@@ -116,3 +117,5 @@ volumes:
 networks:
   ai-kb-network:
     driver: bridge
+  apps:
+    external: true
