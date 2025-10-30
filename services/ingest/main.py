@@ -29,6 +29,13 @@ from src.drive_sync import DriveSync
 from src.processor import UnstructuredProcessor
 from src.indexer import VectorStoreIndexer
 
+# Optional: Docling processor (requires docling to be installed)
+try:
+    from src.docling_processor import DoclingProcessor
+    DOCLING_AVAILABLE = True
+except ImportError:
+    DOCLING_AVAILABLE = False
+
 
 def main():
     # Load configuration first to get defaults
@@ -341,6 +348,19 @@ Examples:
         
         # Initialize components
         drive_sync = DriveSync(config, database, dry_run=args.dry_run)
+        
+        # Select processor based on config
+        if config.processing_engine == "docling":
+            if not DOCLING_AVAILABLE:
+                print("❌ Docling engine selected but not installed!")
+                print("   Install with: pip install docling")
+                print("   Or enable in Dockerfile: RUN uv pip install docling>=2.0.0")
+                sys.exit(1)
+            processor = DoclingProcessor(config, database, dry_run=args.dry_run)
+            print(f"🔧 Using Docling processing engine")
+        else:
+            processor = UnstructuredProcessor(config, database, dry_run=args.dry_run, use_processes=args.use_processes)
+            print(f"🔧 Using Unstructured processing engine")
         processor = UnstructuredProcessor(config, database, dry_run=args.dry_run, use_processes=args.use_processes)
         indexer = VectorStoreIndexer(config, database, dry_run=args.dry_run)
         

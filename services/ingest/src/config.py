@@ -35,6 +35,9 @@ class Config:
     processor_max_workers: int
     indexer_max_workers: int
     
+    # Processing Engine
+    processing_engine: str  # "unstructured" or "docling"
+    
     # Database (PostgreSQL)
     postgres_host: str
     postgres_port: int
@@ -82,6 +85,7 @@ class Config:
             additional_extensions=extensions,
             processor_max_workers=int(os.getenv("PROCESSOR_MAX_WORKERS", "5")),
             indexer_max_workers=int(os.getenv("INDEXER_MAX_WORKERS", "3")),
+            processing_engine=os.getenv("PROCESSING_ENGINE", "unstructured"),  # "unstructured" or "docling"
             postgres_host=os.getenv("POSTGRES_HOST", "localhost"),
             postgres_port=int(os.getenv("POSTGRES_PORT", "5432")),
             postgres_db=os.getenv("POSTGRES_DB", "ai_knowledge_base"),

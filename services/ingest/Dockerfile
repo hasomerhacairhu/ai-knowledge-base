@@ -6,7 +6,7 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies (minimal - poppler for PDFs, libmagic, and Tesseract OCR)
+# Install system dependencies (minimal - poppler for PDFs, libmagic, Tesseract OCR, and pandoc for EPUB)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     libmagic1 \
@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-spa \
     tesseract-ocr-ita \
     tesseract-ocr-ron \
+    pandoc \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -43,6 +44,12 @@ COPY .python-version ./
 # Create virtual environment and install dependencies
 RUN uv venv /app/.venv
 RUN uv sync --frozen --no-dev
+
+# Install pypandoc explicitly (required for EPUB processing)
+RUN uv pip install pypandoc>=1.13
+
+# Install docling for advanced document processing
+RUN uv pip install docling>=2.0.0
 
 # Copy application code
 COPY src/ ./src/

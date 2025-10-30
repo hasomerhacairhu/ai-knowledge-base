@@ -378,10 +378,10 @@ class Database:
             return dict(row) if row else None
     
     def get_files_by_status(self, status: FileStatus, limit: Optional[int] = None) -> List[Dict]:
-        """Get all files with a specific status"""
+        """Get all files with a specific status, ordered by file size (smallest first)"""
         with self.get_connection() as conn:
             cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            query = "SELECT * FROM file_state WHERE status = %s ORDER BY updated_at DESC"
+            query = "SELECT * FROM file_state WHERE status = %s ORDER BY original_file_size ASC NULLS LAST, updated_at DESC"
             if limit:
                 query += f" LIMIT {limit}"
             cursor.execute(query, (status.value,))

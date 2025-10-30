@@ -480,11 +480,19 @@ def _process_single_file(
                 elements_list.append(json.dumps(el_dict, ensure_ascii=False))
             
             elements_jsonl = "\n".join(elements_list)
-            # Safely convert elements to strings, handling None and objects without __str__
-            text_content = "\n\n".join(
-                str(el) if el is not None and hasattr(el, '__str__') else ""
-                for el in elements
-            )
+            
+            # Safely convert elements to strings, handling None and broken __str__ methods
+            def safe_str(el):
+                """Safely convert element to string, handling None and broken __str__ methods"""
+                if el is None:
+                    return ""
+                try:
+                    result = str(el)
+                    return result if result is not None else ""
+                except (TypeError, AttributeError):
+                    return ""
+            
+            text_content = "\n\n".join(safe_str(el) for el in elements)
             
             # Check if text is empty - FAIL the processing if no text extracted
             text_stripped = text_content.strip()
@@ -520,7 +528,7 @@ def _process_single_file(
                     
                     # Try to find title (first Title element)
                     if not doc_title and el_type == 'Title':
-                        el_text = str(el).strip() if el is not None and hasattr(el, '__str__') else ""
+                        el_text = safe_str(el).strip()
                         if el_text and len(el_text) > 3:
                             doc_title = el_text[:200]  # Limit length
                     

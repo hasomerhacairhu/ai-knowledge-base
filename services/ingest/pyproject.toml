@@ -15,4 +15,10 @@ dependencies = [
     "python-dotenv>=1.1.0",
     "tqdm>=4.67.1",
     "unstructured[pdf,docx,pptx,epub]>=0.18.15",
+    "pypandoc>=1.13",
+]
+
+[project.optional-dependencies]
+docling = [
+    "docling>=2.0.0",
 ]
