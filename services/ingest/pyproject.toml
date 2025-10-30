@@ -14,5 +14,5 @@ dependencies = [
     "psycopg2-binary>=2.9.10",
     "python-dotenv>=1.1.0",
     "tqdm>=4.67.1",
-    "unstructured[pdf,docx,pptx]>=0.18.15",
+    "unstructured[pdf,docx,pptx,epub]>=0.18.15",
 ]

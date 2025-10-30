@@ -5,6 +5,7 @@ import json
 import os
 import warnings
 import sys
+import gc
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -479,7 +480,11 @@ def _process_single_file(
                 elements_list.append(json.dumps(el_dict, ensure_ascii=False))
             
             elements_jsonl = "\n".join(elements_list)
-            text_content = "\n\n".join(str(el) for el in elements)
+            # Safely convert elements to strings, handling None and objects without __str__
+            text_content = "\n\n".join(
+                str(el) if el is not None and hasattr(el, '__str__') else ""
+                for el in elements
+            )
             
             # Check if text is empty - FAIL the processing if no text extracted
             text_stripped = text_content.strip()
@@ -515,7 +520,7 @@ def _process_single_file(
                     
                     # Try to find title (first Title element)
                     if not doc_title and el_type == 'Title':
-                        el_text = str(el).strip()
+                        el_text = str(el).strip() if el is not None and hasattr(el, '__str__') else ""
                         if el_text and len(el_text) > 3:
                             doc_title = el_text[:200]  # Limit length
                     
@@ -928,5 +933,158 @@ class UnstructuredProcessor:
         print("\n" + "="*80)
         print(f"✅ Processing complete: {tracker.successful} successful, {tracker.failed} failed")
         print("="*80)
+        
+        return tracker.successful, tracker.failed, processed_sha256_hashes
+    
+    def process_batch_chunked(self, max_files: Optional[int] = None, chunk_size: int = 100, 
+                             parallel: bool = True, retry_failed: bool = False, 
+                             filter_sha256: Optional[List[str]] = None) -> Tuple[int, int, List[str]]:
+        """
+        Process files in chunks to avoid memory buildup (RECOMMENDED for large batches).
+        
+        This method processes files in manageable chunks with explicit garbage collection
+        between chunks to prevent memory leaks and OOM errors.
+        
+        Args:
+            max_files: Total maximum number of files to process (None = no limit)
+            chunk_size: Files per chunk (default: 100, good for 8-16GB RAM)
+            parallel: Use parallel processing (default: True)
+            retry_failed: If True, retry previously failed files
+            filter_sha256: Optional list of SHA256 hashes to process (for full pipeline)
+        
+        Returns:
+            Tuple of (total_successful, total_failed, all_processed_sha256_hashes)
+        """
+        logger.info("="*80)
+        logger.info("🔄 Starting Chunked Processing (Memory-Efficient)")
+        if self.dry_run:
+            logger.info("   [DRY RUN MODE - No changes will be made]")
+        if parallel:
+            executor_type = "ProcessPoolExecutor" if self.use_processes else "ThreadPoolExecutor"
+            logger.info(f"   [PARALLEL MODE - {self.max_workers} workers using {executor_type}]")
+        if retry_failed:
+            logger.info("   [RETRY MODE - Including previously failed files]")
+        if filter_sha256:
+            logger.info(f"   [FILTERED MODE - Processing {len(filter_sha256)} specific files from sync stage]")
+        logger.info(f"   [CHUNK SIZE - {chunk_size} files per chunk]")
+        logger.info("="*80)
+        
+        # Get all files to process
+        files = self.list_incoming_files(max_files=max_files, retry_failed=retry_failed)
+        
+        # Filter by SHA256 if specified (for full pipeline mode)
+        if filter_sha256:
+            filter_set = set(filter_sha256)
+            filtered_files = []
+            for s3_key, sha256 in files:
+                if sha256 in filter_set:
+                    filtered_files.append((s3_key, sha256))
+            files = filtered_files
+            logger.info(f"   Filtered to {len(files)} files from sync stage")
+        
+        if not files:
+            logger.info("✨ No files to process")
+            return 0, 0, []
+        
+        total_successful = 0
+        total_failed = 0
+        all_processed_sha256s = []
+        
+        # Process in chunks
+        total_chunks = (len(files) + chunk_size - 1) // chunk_size
+        
+        for i in range(0, len(files), chunk_size):
+            chunk = files[i:i + chunk_size]
+            chunk_num = (i // chunk_size) + 1
+            
+            logger.info(f"\n{'='*80}")
+            logger.info(f"📦 Processing Chunk {chunk_num}/{total_chunks} ({len(chunk)} files)")
+            logger.info(f"{'='*80}")
+            
+            # Process this chunk
+            success, failed, sha256s = self._process_chunk(chunk, parallel)
+            
+            total_successful += success
+            total_failed += failed
+            all_processed_sha256s.extend(sha256s)
+            
+            # Explicit cleanup between chunks
+            gc.collect()
+            
+            logger.info(f"✅ Chunk {chunk_num} complete: {success} success, {failed} failed")
+            if len(files) > 0:
+                progress_pct = 100.0 * (i + len(chunk)) / len(files)
+                logger.info(f"📊 Overall progress: {total_successful + total_failed}/{len(files)} ({progress_pct:.1f}%)")
+        
+        # Final summary
+        print("\n" + "="*80)
+        print(f"✅ Chunked processing complete: {total_successful} successful, {total_failed} failed")
+        print("="*80)
+        
+        return total_successful, total_failed, all_processed_sha256s
+    
+    def _process_chunk(self, files: List[Tuple[str, str]], parallel: bool) -> Tuple[int, int, List[str]]:
+        """
+        Process a single chunk of files.
+        
+        Args:
+            files: List of (s3_key, sha256) tuples
+            parallel: Use parallel processing
+        
+        Returns:
+            Tuple of (successful_count, failed_count, processed_sha256_hashes)
+        """
+        tracker = ProgressTracker(len(files), "Processing")
+        processed_sha256_hashes = []
+        
+        if parallel and self.max_workers > 1:
+            ExecutorClass = ProcessPoolExecutor if self.use_processes else ThreadPoolExecutor
+            self.quiet_mode = True
+            
+            with ExecutorClass(max_workers=self.max_workers) as executor:
+                if self.use_processes:
+                    db_config = {
+                        "host": self.database.connection_params["host"],
+                        "port": self.database.connection_params["port"],
+                        "database": self.database.connection_params["database"],
+                        "user": self.database.connection_params["user"],
+                        "password": self.database.connection_params["password"]
+                    }
+                    future_to_key = {
+                        executor.submit(_process_file_worker, sha256, s3_key, self.config, db_config, self.dry_run, self.quiet_mode): (s3_key, sha256)
+                        for s3_key, sha256 in files
+                    }
+                else:
+                    future_to_key = {
+                        executor.submit(self.process_file, s3_key, sha256): (s3_key, sha256)
+                        for s3_key, sha256 in files
+                    }
+                
+                with tqdm(total=len(files), desc="🔄 Processing chunk", unit="file", 
+                          leave=False, dynamic_ncols=True) as pbar:
+                    for future in as_completed(future_to_key):
+                        s3_key, sha256 = future_to_key[future]
+                        try:
+                            result_sha256 = future.result()
+                            tracker.update(success=bool(result_sha256))
+                            if result_sha256:
+                                processed_sha256_hashes.append(result_sha256)
+                        except Exception as e:
+                            tracker.update(success=False)
+                        
+                        pbar.set_postfix_str(f"✅ {tracker.successful} | ❌ {tracker.failed}")
+                        pbar.update(1)
+            
+            self.quiet_mode = False
+        else:
+            # Sequential processing
+            with tqdm(total=len(files), desc="🔄 Processing chunk", unit="file", leave=False) as pbar:
+                for s3_key, sha256 in files:
+                    result_sha256 = self.process_file(s3_key, sha256)
+                    tracker.update(success=bool(result_sha256))
+                    if result_sha256:
+                        processed_sha256_hashes.append(result_sha256)
+                    pbar.set_postfix_str(f"✅ {tracker.successful} | ❌ {tracker.failed}")
+                    pbar.update(1)
         
         return tracker.successful, tracker.failed, processed_sha256_hashes

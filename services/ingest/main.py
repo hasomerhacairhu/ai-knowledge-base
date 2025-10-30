@@ -240,7 +240,7 @@ Examples:
                 # Process synced files
                 if stats['synced'] > 0:
                     print(f"\n📥 Processing {stats['synced']} synced files...")
-                    success, failed, _ = processor.process_batch(max_files=None, retry_failed=False)
+                    success, failed, _ = processor.process_batch_chunked(max_files=None, chunk_size=100, retry_failed=False)
                     print(f"   ✅ {success} processed, ❌ {failed} failed")
                     total_fixed += success
                 
@@ -254,7 +254,7 @@ Examples:
                 # Retry failed processing
                 if stats['failed_process'] > 0:
                     print(f"\n🔄 Retrying {stats['failed_process']} failed processing...")
-                    success, failed, _ = processor.process_batch(max_files=None, retry_failed=True)
+                    success, failed, _ = processor.process_batch_chunked(max_files=None, chunk_size=100, retry_failed=True)
                     print(f"   ✅ {success} processed, ❌ {failed} failed")
                     total_fixed += success
                     
