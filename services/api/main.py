@@ -10,7 +10,7 @@ import logging
 import psycopg2
 from psycopg2 import pool
 import boto3
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
@@ -68,7 +68,7 @@ class SearchResult(BaseModel):
 
 class SearchResponse(BaseModel):
     query: str
-    search_query: str
+    search_query: Union[str, List[str]]  # OpenAI can return either string or list
     results: List[SearchResult]
     count: int
 
