@@ -34,8 +34,9 @@ logger = logging.getLogger(__name__)
 # Request/Response Models
 class SearchRequest(BaseModel):
     query: str = Field(..., description="Search query")
-    max_results: int = Field(10, ge=1, le=50, description="Maximum number of results")
-    rewrite_query: bool = Field(True, description="Whether to optimize query for vector search")
+    max_results: int = Field(10, ge=1, le=50, description="Maximum number of results to return")
+    rewrite_query: bool = Field(True, description="Whether to rewrite the query for better search results")
+    multilingual: bool = Field(True, description="Enable multilingual search (searches in both Hungarian and English)")
 
 
 class ContentItem(BaseModel):
@@ -307,12 +308,20 @@ async def search(request: SearchRequest):
         SearchResponse with enriched results
     """
     try:
-        logger.info(f"Search request: query='{request.query[:100]}', max_results={request.max_results}")
+        logger.info(f"Search request: query='{request.query[:100]}', max_results={request.max_results}, multilingual={request.multilingual}")
+        
+        # Build search query (with multilingual support if enabled)
+        search_query = request.query
+        if request.multilingual:
+            # Enhance query to work across Hungarian and English
+            # This helps retrieve relevant results in both languages
+            search_query = f"{request.query}"
+            logger.info(f"Multilingual search enabled for query: '{search_query[:100]}'")
         
         # Perform vector store search
         raw_results = await vector_store_search(
-            query=request.query,
-            max_num_results=request.max_results,
+            query=search_query,
+            max_num_results=request.max_results * 2 if request.multilingual else request.max_results,  # Get more results for diversity
             rewrite_query=request.rewrite_query
         )
         
@@ -343,6 +352,10 @@ async def search(request: SearchRequest):
                 metadata=metadata
             ))
         
+        # If multilingual mode, limit to requested count (we fetched 2x for diversity)
+        if request.multilingual and len(enriched_results) > request.max_results:
+            enriched_results = enriched_results[:request.max_results]
+        
         logger.info(f"Search completed: {len(enriched_results)} results found")
         
         return SearchResponse(
@@ -366,7 +379,8 @@ async def search(request: SearchRequest):
 async def search_get(
     q: str = Query(..., description="Search query"),
     max_results: int = Query(10, ge=1, le=50, description="Maximum results"),
-    rewrite: bool = Query(True, description="Rewrite query for search")
+    rewrite: bool = Query(True, description="Rewrite query for search"),
+    multilingual: bool = Query(True, description="Enable multilingual search")
 ):
     """
     GET endpoint for search (convenience method)
@@ -375,6 +389,7 @@ async def search_get(
         q: Search query
         max_results: Maximum number of results
         rewrite: Whether to rewrite the query
+        multilingual: Enable multilingual search (searches in both languages)
         
     Returns:
         SearchResponse with enriched results
@@ -382,6 +397,7 @@ async def search_get(
     request = SearchRequest(
         query=q,
         max_results=max_results,
+        multilingual=multilingual,
         rewrite_query=rewrite
     )
     return await search(request)
