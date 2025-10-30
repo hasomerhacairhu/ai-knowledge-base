@@ -198,7 +198,10 @@ def get_file_metadata(sha256_hash: str) -> Optional[FileMetadata]:
                     )
                     
                     # Processed text file download URL (7 days)
-                    txt_key = f"{s3_key}.txt"
+                    # Text files are stored as: derivatives/{shard1}/{shard2}/{sha256}/text.txt
+                    shard1 = sha256[:2]
+                    shard2 = sha256[2:4]
+                    txt_key = f"derivatives/{shard1}/{shard2}/{sha256}/text.txt"
                     processed_text_download_url = s3_client.generate_presigned_url(
                         'get_object',
                         Params={
