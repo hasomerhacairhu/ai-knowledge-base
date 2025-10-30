@@ -399,7 +399,7 @@ async def search(request: SearchRequest):
 
 @app.get("/api/search", response_model=SearchResponse)
 async def search_get(
-    q: Union[str, List[str]] = Query(..., description="Search query or comma-separated queries"),
+    q: str = Query(..., description="Search query or pipe-separated queries (e.g., 'query1|query2')"),
     max_results: int = Query(10, ge=1, le=50, description="Maximum results"),
     rewrite: bool = Query(True, description="Rewrite query for search"),
     multilingual: bool = Query(True, description="Enable multilingual search"),
@@ -409,7 +409,7 @@ async def search_get(
     GET endpoint for search (convenience method)
     
     Args:
-        q: Search query or comma-separated queries (e.g., "query1,query2")
+        q: Search query or pipe-separated queries (e.g., "query1|query2")
         max_results: Maximum number of results
         rewrite: Whether to rewrite the query
         multilingual: Enable multilingual search (searches in both languages)
@@ -418,8 +418,9 @@ async def search_get(
     Returns:
         SearchResponse with enriched results
     """
-    # Split comma-separated queries if provided as string
-    queries = q.split(',') if isinstance(q, str) and ',' in q else q
+    # Split pipe-separated queries if provided as string
+    # Using pipe (|) instead of comma to avoid URL encoding issues
+    queries = [q.strip() for q in q.split('|')] if '|' in q else q
     
     request = SearchRequest(
         query=queries,
