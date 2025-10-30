@@ -1,156 +1,152 @@
-# AI Knowledge Base - Multi-Service Architecture# AI Knowledge Base - Multi-Service Architecture# AI Knowledge Base Ingest Pipeline
+# AI Knowledge Base Ingest Pipeline# AI Knowledge Base Ingest Pipeline
 
 
 
-A modular document ingestion and search system with separate Docker services for ingestion, API, and PostgreSQL database.
+A robust document ingestion pipeline that syncs documents from Google Drive, processes them with Unstructured.io or IBM Docling, stores them in S3, and indexes them in OpenAI Vector Stores for semantic search.A robust document ingestion pipeline that syncs documents from Google Drive, processes them with Unstructured.io or IBM Docling, stores them in S3, and indexes them in OpenAI Vector Stores for semantic search.
 
 
 
-## 🏗️ ArchitectureA modular document ingestion and search system with separate Docker services for ingestion, API, and database.A robust document ingestion pipeline that syncs documents from Google Drive, processes them with Unstructured.io, stores them in S3, and indexes them in OpenAI Vector Stores for semantic search.
+## 🏗️ Architecture
 
 
 
-```
+```## 🏗️ ArchitectureA modular document ingestion and search system with separate Docker services for ingestion, API, and database.A robust document ingestion pipeline that syncs documents from Google Drive, processes them with Unstructured.io, stores them in S3, and indexes them in OpenAI Vector Stores for semantic search.
 
 ┌─────────────────┐
 
-│  Google Drive   │  ← Source documents## 🏗️ Architecture Overview## 🎯 Purpose
+│  Google Drive   │  ← Source documents
 
 └────────┬────────┘
 
-         │
+         │```
 
          ▼
 
-┌──────────────────────────────────────────────┐```This pipeline is designed to **ingest and prepare documents** for AI-powered knowledge retrieval systems. It handles the complete workflow from Google Drive to OpenAI Vector Stores, making your documents searchable via semantic AI.
+┌──────────────────────────────────────────────┐┌─────────────────┐
 
 │  INGEST SERVICE (services/ingest/)           │
 
-│  • Syncs from Google Drive to S3             │┌─────────────────┐
+│  • Syncs from Google Drive to S3             ││  Google Drive   │  ← Source documents## 🏗️ Architecture Overview## 🎯 Purpose
 
-│  • Processes with Unstructured.io            │
+│  • Processes with Unstructured/Docling       │
 
-│  • Indexes to OpenAI Vector Store            ││  Google Drive   │**Note**: This repository handles **ingestion only**. For querying the vector store and building Custom GPT APIs, see the **[api-reference/](api-reference/)** folder.
+│  • Indexes to OpenAI Vector Store            │└────────┬────────┘
 
-│  • SQLite state tracking                     │
+│  • PostgreSQL state tracking                 │
 
-└────────┬─────────────────────────────────────┘│  (Source docs)  │
+└────────┬─────────────────────────────────────┘         │
 
          │
 
-         ▼└────────┬────────┘## � Repository Organization
+         ▼         ▼
 
 ┌──────────────────────────────────────────────┐
 
-│  POSTGRES DATABASE                            │         │
+│  POSTGRES DATABASE                            │┌──────────────────────────────────────────────┐```This pipeline is designed to **ingest and prepare documents** for AI-powered knowledge retrieval systems. It handles the complete workflow from Google Drive to OpenAI Vector Stores, making your documents searchable via semantic AI.
 
 │  • File metadata and state tracking          │
 
-│  • Shared between services                   │         ▼This repository is organized into **two clear sections**:
+│  • Shared between services                   ││  INGEST SERVICE (services/ingest/)           │
 
 └────────┬─────────────────────────────────────┘
 
-         │┌──────────────────────────────────────────────┐
+         ││  • Syncs from Google Drive to S3             │┌─────────────────┐
 
          ▼
 
-┌──────────────────────────────────────────────┐│  INGEST SERVICE (services/ingest/)           │### 🔧 Root Directory (Ingestion Pipeline)
+┌──────────────────────────────────────────────┐│  • Processes with Unstructured.io            │
 
 │  API SERVICE (services/api/)                 │
 
-│  • FastAPI REST endpoints                    ││  ─────────────────────────────────────────   │**Purpose**: Sync documents from Google Drive to OpenAI Vector Stores
+│  • FastAPI REST endpoints                    ││  • Indexes to OpenAI Vector Store            ││  Google Drive   │**Note**: This repository handles **ingestion only**. For querying the vector store and building Custom GPT APIs, see the **[api-reference/](api-reference/)** folder.
 
 │  • Semantic search over Vector Store         │
 
-│  • Metadata enrichment (Drive/S3 URLs)       ││  • Syncs from Google Drive to S3             │
+│  • Metadata enrichment (Drive/S3 URLs)       ││  • SQLite state tracking                     │
 
 │  • CORS support                              │
 
-└──────────────────────────────────────────────┘│  • Processes with Unstructured.io            │**Key files**:
+└──────────────────────────────────────────────┘└────────┬─────────────────────────────────────┘│  (Source docs)  │
 
 ```
 
-│  • Indexes to OpenAI Vector Store            │- `main.py` - Pipeline entry point
+         │
 
 ## 📁 Repository Structure
 
-│  • Updates PostgreSQL & SQLite               │- `src/` - Pipeline source code (drive_sync, processor, indexer)
+         ▼└────────┬────────┘## � Repository Organization
 
 ```
 
-ai-knowledge-base-ingest/└────────┬─────────────────────────────────────┘- `data/pipeline.db` - SQLite database tracking file state
+ai-knowledge-base-ingest/┌──────────────────────────────────────────────┐
 
 ├── docker-compose.yml       # Orchestrates all services
 
-├── Makefile                 # Helper commands         │
+├── Makefile                 # Helper commands│  POSTGRES DATABASE                            │         │
 
-├── .env                     # Shared configuration
+├── .env                     # Configuration (not in git)
 
-├── services/         ▼**Use this for**: Setting up and running the document ingestion workflow
+├── services/│  • File metadata and state tracking          │
 
 │   ├── ingest/             # Ingestion service
 
-│   │   ├── Dockerfile┌──────────────────────────────────────────────┐
+│   │   ├── Dockerfile│  • Shared between services                   │         ▼This repository is organized into **two clear sections**:
 
 │   │   ├── pyproject.toml
 
-│   │   ├── uv.lock│  POSTGRES DATABASE                            │### 🚀 api-reference/ Folder (Query API Reference)
+│   │   ├── main.py└────────┬─────────────────────────────────────┘
 
-│   │   ├── main.py
+│   │   ├── purge.py
 
-│   │   ├── purge.py│  ─────────────────────────────────────────   │**Purpose**: Sample implementation for querying the vector store (for your future Custom GPT API)
+│   │   └── src/            # Pipeline modules         │┌──────────────────────────────────────────────┐
 
-│   │   └── src/            # Pipeline modules
+│   └── api/                # API service
 
-│   └── api/                # API service│  • File metadata and state tracking          │
+│       ├── Dockerfile         ▼
 
-│       ├── Dockerfile
+│       ├── pyproject.toml
 
-│       ├── pyproject.toml│  • Shared between ingest and API             │**Key files**:
-
-│       ├── uv.lock
-
-│       └── main.py└────────┬─────────────────────────────────────┘- `direct_search.py` - Search implementation (NO LLM required)
+│       └── main.py┌──────────────────────────────────────────────┐│  INGEST SERVICE (services/ingest/)           │### 🔧 Root Directory (Ingestion Pipeline)
 
 ├── api-reference/          # Query API documentation & samples
 
-└── test/                   # Test files and documentation         │- `README.md` - Complete API integration guide
+└── test/                   # Test files and documentation│  API SERVICE (services/api/)                 │
 
 ```
 
-         ▼- `QUICK_START.md` - 5-minute setup guide
+│  • FastAPI REST endpoints                    ││  ─────────────────────────────────────────   │**Purpose**: Sync documents from Google Drive to OpenAI Vector Stores
 
 ## 🚀 Quick Start
 
-┌──────────────────────────────────────────────┐- Performance benchmarks and accuracy reports
+│  • Semantic search over Vector Store         │
 
 ### Prerequisites
 
-│  API SERVICE (services/api/)                 │
+│  • Metadata enrichment (Drive/S3 URLs)       ││  • Syncs from Google Drive to S3             │
 
 - Docker & Docker Compose
 
-- Google Cloud service account JSON file│  ─────────────────────────────────────────   │**Use this for**: Building your Custom GPT API, implementing semantic search
+- Google Cloud service account JSON file│  • CORS support                              │
 
 - S3 credentials (AWS or DigitalOcean Spaces)
 
-- OpenAI API key with Vector Store access│  • FastAPI REST endpoints                    │
+- OpenAI API key with Vector Store access└──────────────────────────────────────────────┘│  • Processes with Unstructured.io            │**Key files**:
 
 
 
-### 1. Configure Environment│  • Semantic search over Vector Store         │### 📚 Quick Links
+### 1. Configure Environment```
 
 
 
-```bash│  • Metadata enrichment (Drive/S3 URLs)       │
+```bash│  • Indexes to OpenAI Vector Store            │- `main.py` - Pipeline entry point
 
 # Copy example env file
 
-cp .env.example .env│  • CORS support for web clients              │- **[api-reference/QUICK_START.md](api-reference/QUICK_START.md)** - 5-minute API setup
+cp .env.example .env## 📁 Repository Structure
 
 
 
-# Edit with your credentials└──────────────────────────────────────────────┘- **[api-reference/README.md](api-reference/README.md)** - Complete API guide
+# Edit with your credentials│  • Updates PostgreSQL & SQLite               │- `src/` - Pipeline source code (drive_sync, processor, indexer)
 
 nano .env
 
@@ -158,523 +154,1201 @@ nano .env
 
 
 
-Required environment variables:## 🏗️ Architecture
+Required environment variables:ai-knowledge-base-ingest/└────────┬─────────────────────────────────────┘- `data/pipeline.db` - SQLite database tracking file state
 
-```env
 
-# Google Drive## 📁 Repository Structure
 
-GOOGLE_SERVICE_ACCOUNT_FILE=./somer-services-458421-ee757e0c4238.json
-
-GOOGLE_DRIVE_FOLDER_ID=your-folder-id```
-
-
-
-# S3 Storage```┌─────────────────┐
-
-S3_ENDPOINT=https://your-s3-endpoint.com
-
-S3_ACCESS_KEY=your-access-keyai-knowledge-base-ingest/│  Google Drive   │
-
-S3_SECRET_KEY=your-secret-key
-
-S3_BUCKET=your-bucket-name├── docker-compose.yml       # Orchestrates all services│  (Source docs)  │
-
-S3_REGION=us-east-1
-
-├── .env                     # Shared configuration└────────┬────────┘
-
-# OpenAI
-
-OPENAI_API_KEY=sk-proj-...├── services/         │
-
-VECTOR_STORE_ID=vs_...
-
-│   ├── ingest/             # Ingestion service         ▼
-
-# PostgreSQL
-
-POSTGRES_DB=ai_knowledge_base│   │   ├── Dockerfile┌─────────────────────────────────────────┐
-
-POSTGRES_USER=postgres
-
-POSTGRES_PASSWORD=your-secure-password│   │   ├── pyproject.toml│  1. SYNC (drive_sync.py)                │
-
-
-
-# API│   │   ├── main.py│     - List changed files                │
-
-API_PORT=8000
-
-```│   │   ├── purge.py│     - Download from Drive               │
-
-
-
-### 2. Start Services│   │   └── src/            # Pipeline modules│     - Upload to S3                      │
-
-
-
-```bash│   │       ├── config.py│     - Store metadata in SQLite          │
-
-# Start all services
-
-docker-compose up -d│   │       ├── database.py└────────┬────────────────────────────────┘
-
-
-
-# Or use Makefile│   │       ├── drive_sync.py         │
-
-make up
-
-│   │       ├── processor.py         ▼
-
-# Check status
-
-docker-compose ps│   │       ├── indexer.py┌─────────────────────────────────────────┐
-
-```
-
-│   │       └── utils.py│  2. PROCESS (processor.py)              │
-
-Services will be available at:
-
-- **API**: http://localhost:8000│   └── api/                # API service│     - Fetch from S3                     │
-
-- **API Docs**: http://localhost:8000/docs
-
-- **PostgreSQL**: localhost:5432│       ├── Dockerfile│     - Process with Unstructured.io      │
-
-
-
-### 3. Run Ingestion│       ├── pyproject.toml│     - Extract text, tables, images      │
-
-
-
-```bash│       ├── main.py         # FastAPI app│     - Save structured data to S3        │
-
-# Sync files from Google Drive
-
-make ingest-sync│       └── README.md└────────┬────────────────────────────────┘
-
-# or
-
-docker-compose run --rm ingest python main.py sync --max-files 10├── data/                   # Shared volume (SQLite)         │
-
-
-
-# Full pipeline (sync + process + index)│   └── pipeline.db         ▼
-
-make ingest-full
-
-# or└── README.md              # This file┌─────────────────────────────────────────┐
-
-docker-compose run --rm ingest python main.py full --max-files 10
-
-```│  3. INDEX (indexer.py)                  │
-
-# Show statistics
-
-make ingest-stats│     - Upload to OpenAI                  │
-
-```
-
-## 🚀 Quick Start│     - Add to Vector Store               │
-
-### 4. Test API
-
-│     - Enable semantic search            │
-
-```bash
-
-# Check health### Prerequisites└────────┬────────────────────────────────┘
-
-curl http://localhost:8000/health
-
-         │
-
-# Perform search
-
-curl -X POST http://localhost:8000/api/search \- Docker & Docker Compose         ▼
-
-  -H "Content-Type: application/json" \
-
-  -d '{"query": "Your question here", "max_results": 5}'- Google Cloud service account JSON file┌─────────────────┐
-
-
-
-# Or use GET- S3 credentials (AWS or DigitalOcean Spaces)│  OpenAI Vector  │
-
-curl "http://localhost:8000/api/search?q=Your+question&max_results=5"
-
-- OpenAI API key with Vector Store access│     Store       │
-
-# Interactive docs
-
-open http://localhost:8000/docs│  (Searchable)   │
-
-```
-
-### 1. Configure Environment└─────────────────┘
-
-## 🎯 Service Details
-
-```
-
-### Ingest Service
-
-```bash
-
-**Purpose**: Batch processing of documents from Drive to Vector Store
-
-# Copy example env file## 🚀 Quick Start
-
-**Technology**:
-
-- Python 3.11cp .env.example .env
-
-- uv for dependency management
-
-- Isolated virtual environment### Prerequisites
-
-- 150 packages (optimized)
-
-# Edit with your credentials
-
-**Key Dependencies**:
-
-- `boto3` - S3 storagenano .env- Python 3.11+
-
-- `google-api-python-client` - Google Drive API
-
-- `openai` - Vector Store indexing```- Google Cloud service account with Drive API access
-
-- `unstructured` - Document processing
-
-- `tqdm` - Progress tracking- AWS S3 bucket
-
-
-
-**Commands**:Required environment variables:- OpenAI API key with Vector Store access
-
-```bash
-
-# Sync from Drive```env- Unstructured.io API key (optional, for cloud processing)
-
-docker-compose run --rm ingest python main.py sync --max-files 10
+```env├── docker-compose.yml       # Orchestrates all services
 
 # Google Drive
 
-# Process files
+GOOGLE_SERVICE_ACCOUNT_FILE=./somer-services-458421-ee757e0c4238.json├── Makefile                 # Helper commands         │
 
-docker-compose run --rm ingest python main.py process --max-files 10GOOGLE_SERVICE_ACCOUNT_FILE=./somer-services-458421-ee757e0c4238.json### Installation
+GOOGLE_DRIVE_FOLDER_ID=your-folder-id
+
+├── .env                     # Shared configuration
+
+# S3 Storage
+
+S3_ENDPOINT=https://your-s3-endpoint.com├── services/         ▼**Use this for**: Setting up and running the document ingestion workflow
+
+S3_ACCESS_KEY=your-access-key
+
+S3_SECRET_KEY=your-secret-key│   ├── ingest/             # Ingestion service
+
+S3_BUCKET=your-bucket-name
+
+S3_REGION=us-east-1│   │   ├── Dockerfile┌──────────────────────────────────────────────┐
 
 
 
-# Index to Vector StoreGOOGLE_DRIVE_FOLDER_ID=your-folder-id
+# OpenAI│   │   ├── pyproject.toml
 
-docker-compose run --rm ingest python main.py index --max-files 10
+OPENAI_API_KEY=sk-proj-...
 
-```bash
-
-# Full pipeline
-
-docker-compose run --rm ingest python main.py full --max-files 10# S3 Storage# Clone the repository
+VECTOR_STORE_ID=vs_...│   │   ├── uv.lock│  POSTGRES DATABASE                            │### 🚀 api-reference/ Folder (Query API Reference)
 
 
 
-# StatisticsS3_ENDPOINT=https://your-s3-endpoint.comgit clone <your-repo-url>
+# PostgreSQL│   │   ├── main.py
 
-docker-compose run --rm ingest python main.py stats
+POSTGRES_DB=ai_knowledge_base
 
-S3_ACCESS_KEY=your-access-keycd ai-knowledge-base-ingest
+POSTGRES_USER=postgres│   │   ├── purge.py│  ─────────────────────────────────────────   │**Purpose**: Sample implementation for querying the vector store (for your future Custom GPT API)
 
-# Cleanup stale files
+POSTGRES_PASSWORD=your-secure-password
 
-docker-compose run --rm ingest python main.py cleanupS3_SECRET_KEY=your-secret-key
+│   │   └── src/            # Pipeline modules
+
+# Processing Engine (optional)
+
+PROCESSING_ENGINE=unstructured  # or "docling"│   └── api/                # API service│  • File metadata and state tracking          │
+
+
+
+# API│       ├── Dockerfile
+
+API_PORT=8000
+
+```│       ├── pyproject.toml│  • Shared between ingest and API             │**Key files**:
+
+
+
+### 2. Start Services│       ├── uv.lock
+
+
+
+```bash│       └── main.py└────────┬─────────────────────────────────────┘- `direct_search.py` - Search implementation (NO LLM required)
+
+# Start all services
+
+docker-compose up -d├── api-reference/          # Query API documentation & samples
+
+
+
+# Or use Makefile└── test/                   # Test files and documentation         │- `README.md` - Complete API integration guide
+
+make up
 
 ```
 
-S3_BUCKET=your-bucket-name# Install dependencies with uv (recommended)
+# Check status
 
-### API Service
+docker-compose ps         ▼- `QUICK_START.md` - 5-minute setup guide
 
-S3_REGION=us-east-1uv sync
+```
 
-**Purpose**: REST API for semantic search
-
-
-
-**Technology**:
-
-- Python 3.11# OpenAI# Or with pip
-
-- FastAPI framework
-
-- uv for dependency managementOPENAI_API_KEY=sk-proj-...pip install -e .
-
-- Isolated virtual environment
-
-- 32 packages (minimal!)VECTOR_STORE_ID=vs_...```
-
-
-
-**Key Dependencies**:
-
-- `fastapi` - Web framework
-
-- `uvicorn` - ASGI server# PostgreSQL### Configuration
-
-- `httpx` - HTTP client
-
-- `boto3` - S3 presigned URLsPOSTGRES_DB=ai_knowledge_base
-
-- `python-dotenv` - Configuration
-
-POSTGRES_USER=postgres1. Copy the example environment file:
-
-**Endpoints**:
-
-- `GET /` - Service informationPOSTGRES_PASSWORD=your-secure-password```bash
-
-- `GET /health` - Health check
-
-- `POST /api/search` - Semantic search (JSON body)cp .env.example .env
-
-- `GET /api/search` - Semantic search (URL params)
-
-- `GET /docs` - Interactive API docs (Swagger UI)# API```
-
-
-
-**Features**:API_PORT=8000
-
-- Automatic metadata enrichment
-
-- Drive URLs and S3 presigned URLs```2. Edit `.env` with your credentials:
-
-- CORS support
-
-- Health checks```env
-
-- OpenAPI/Swagger documentation
-
-### 2. Start Services# Google Drive
-
-### PostgreSQL Database
-
-GOOGLE_CREDENTIALS_FILE=path/to/service-account.json
-
-**Purpose**: Shared metadata storage
-
-```bashDRIVE_FOLDER_ID=your-drive-folder-id
-
-**Technology**:
-
-- PostgreSQL 16 Alpine# Start all services
-
-- Persistent volumes
-
-- Health checksdocker-compose up -d# AWS S3
-
-- Automatic initialization
-
-AWS_ACCESS_KEY_ID=your-access-key
-
-**Schema**:
-
-```sql# Check statusAWS_SECRET_ACCESS_KEY=your-secret-key
-
--- File state tracking
-
-CREATE TABLE file_state (docker-compose psAWS_REGION=us-east-1
-
-    id SERIAL PRIMARY KEY,
-
-    sha256 VARCHAR(64) UNIQUE NOT NULL,S3_BUCKET_NAME=your-bucket-name
-
-    s3_key TEXT NOT NULL,
-
-    original_name TEXT NOT NULL,# View logs
-
-    status VARCHAR(20) NOT NULL,
-
-    synced_at TIMESTAMP,docker-compose logs -f# OpenAI
-
-    processed_at TIMESTAMP,
-
-    indexed_at TIMESTAMP,```OPENAI_API_KEY=sk-proj-...
-
-    openai_file_id TEXT,
-
-    error_message TEXTVECTOR_STORE_ID=vs_...
-
-);
+## 🚀 Quick Start
 
 Services will be available at:
 
--- Google Drive mapping
+- **API**: http://localhost:8000┌──────────────────────────────────────────────┐- Performance benchmarks and accuracy reports
 
-CREATE TABLE drive_file_mapping (- **API**: http://localhost:8000# Unstructured.io (optional)
+- **API Docs**: http://localhost:8000/docs
 
-    id SERIAL PRIMARY KEY,
-
-    sha256 VARCHAR(64) NOT NULL,- **API Docs**: http://localhost:8000/docsUNSTRUCTURED_API_KEY=your-api-key
-
-    drive_file_id VARCHAR(255) NOT NULL,
-
-    drive_file_name TEXT NOT NULL,- **PostgreSQL**: localhost:5432UNSTRUCTURED_API_URL=https://api.unstructuredapp.io/general/v0/general
-
-    drive_parent_path TEXT,
-
-    drive_modified_time TIMESTAMP,```
-
-    FOREIGN KEY (sha256) REFERENCES file_state(sha256)
-
-);### 3. Run Ingestion
-
-```
-
-## 📖 Usage
-
-## 🛠️ Development
-
-```bash
-
-### Local Development (Without Docker)
-
-# Sync files from Google Drive### Basic Commands
-
-**API Service:**
-
-```bashdocker-compose run --rm ingest uv run python main.py sync --max-files 10
-
-cd services/api
-
-uv sync```bash
-
-uv run uvicorn main:app --reload --port 8000
-
-```# Process files with Unstructured.io# Full pipeline - sync, process, and index
+- **PostgreSQL**: localhost:5432### Prerequisites
 
 
 
-**Ingest Service:**docker-compose run --rm ingest uv run python main.py process --max-files 10uv run python main.py
+### 3. Run Ingestion│  API SERVICE (services/api/)                 │
 
-```bash
 
-cd services/ingest
 
-uv sync
+```bash- Docker & Docker Compose
 
-uv run python main.py sync --max-files 5# Index to OpenAI Vector Store# Individual stages
+# Sync files from Google Drive
+
+make ingest-sync- Google Cloud service account JSON file│  ─────────────────────────────────────────   │**Use this for**: Building your Custom GPT API, implementing semantic search
+
+# or
+
+docker-compose run --rm ingest python main.py sync --max-files 10- S3 credentials (AWS or DigitalOcean Spaces)
+
+
+
+# Full pipeline (sync + process + index)- OpenAI API key with Vector Store access│  • FastAPI REST endpoints                    │
+
+make ingest-full
+
+# or
+
+docker-compose run --rm ingest python main.py full --max-files 10
+
+### 1. Configure Environment│  • Semantic search over Vector Store         │### 📚 Quick Links
+
+# Show statistics
+
+make ingest-stats
 
 ```
 
-docker-compose run --rm ingest uv run python main.py index --max-files 10uv run python main.py sync              # Sync from Drive to S3
-
-### Building Images
-
-uv run python main.py process           # Process files with Unstructured
-
-```bash
-
-# Build all services# Or run full pipelineuv run python main.py index             # Index files to OpenAI
-
-docker-compose build
-
-# ordocker-compose run --rm ingest uv run python main.py full --max-files 10
-
-make build
-
-```# Dry run (test without changes)
-
-# Build specific service
-
-docker-compose build apiuv run python main.py --dry-run sync
-
-docker-compose build ingest
+```bash│  • Metadata enrichment (Drive/S3 URLs)       │
 
 ### 4. Test API
 
-# Build with no cache
-
-docker-compose build --no-cache# Limit number of files
-
-```
-
-```bashuv run python main.py --max-files 10 sync
-
-### Makefile Commands
-
-# Check health```
+# Copy example env file
 
 ```bash
 
-make help           # Show all commandscurl http://localhost:8000/health
+# Check healthcp .env.example .env│  • CORS support for web clients              │- **[api-reference/QUICK_START.md](api-reference/QUICK_START.md)** - 5-minute API setup
 
-make build          # Build all Docker images
-
-make up             # Start all services### Pipeline Stages
-
-make down           # Stop all services
-
-make logs           # View logs from all services# Perform search
-
-make restart        # Restart all services
-
-make clean          # Remove all containers and volumescurl -X POST http://localhost:8000/api/search \#### 1. Sync Stage
+curl http://localhost:8000/health
 
 
 
-# Ingestion  -H "Content-Type: application/json" \Syncs files from Google Drive to S3:
+# Perform search
 
-make ingest-sync    # Sync files from Drive
+curl -X POST http://localhost:8000/api/search \# Edit with your credentials└──────────────────────────────────────────────┘- **[api-reference/README.md](api-reference/README.md)** - Complete API guide
 
-make ingest-process # Process files  -d '{"query": "What is Centropa?", "max_results": 5}'- Lists all files in the configured Drive folder (recursive)
+  -H "Content-Type: application/json" \
 
-make ingest-full    # Run full pipeline
-
-make ingest-stats   # Show statistics- Detects changes using modification timestamps and SHA256 hashes
+  -d '{"query": "Your question here", "max_results": 5}'nano .env
 
 
 
-# API# Or use GET- Downloads changed files from Drive
+# Or use GET``````
 
-make api-test       # Test API health
-
-make api-search     # Example search querycurl "http://localhost:8000/api/search?q=Holocaust+education&max_results=5"- Uploads to S3 with metadata
+curl "http://localhost:8000/api/search?q=Your+question&max_results=5"
 
 
 
-# Development```- Exports Google Workspace files (Docs, Sheets, Slides) to Office formats
+# Interactive docs
 
-make dev-api        # Run API locally (no Docker)
-
-make dev-ingest     # Run ingest locally (no Docker)- Stores file state in SQLite database
+open http://localhost:8000/docsRequired environment variables:## 🏗️ Architecture
 
 ```
 
+```env
+
+## 🎯 Service Details
+
+# Google Drive## 📁 Repository Structure
+
+### Ingest Service
+
+GOOGLE_SERVICE_ACCOUNT_FILE=./somer-services-458421-ee757e0c4238.json
+
+**Purpose**: Batch processing of documents from Drive to Vector Store
+
+GOOGLE_DRIVE_FOLDER_ID=your-folder-id```
+
+**Key Dependencies**:
+
+- `boto3` - S3 storage
+
+- `google-api-python-client` - Google Drive API
+
+- `openai` - Vector Store indexing# S3 Storage```┌─────────────────┐
+
+- `unstructured` - Document processing
+
+- `docling` - Advanced document processing (optional)S3_ENDPOINT=https://your-s3-endpoint.com
+
+
+
+**Commands**:S3_ACCESS_KEY=your-access-keyai-knowledge-base-ingest/│  Google Drive   │
+
+```bash
+
+# Sync from DriveS3_SECRET_KEY=your-secret-key
+
+docker-compose run --rm ingest python main.py sync --max-files 10
+
+S3_BUCKET=your-bucket-name├── docker-compose.yml       # Orchestrates all services│  (Source docs)  │
+
+# Process files
+
+docker-compose run --rm ingest python main.py process --max-files 10S3_REGION=us-east-1
+
+
+
+# Index to Vector Store├── .env                     # Shared configuration└────────┬────────┘
+
+docker-compose run --rm ingest python main.py index --max-files 10
+
+# OpenAI
+
+# Full pipeline
+
+docker-compose run --rm ingest python main.py full --max-files 10OPENAI_API_KEY=sk-proj-...├── services/         │
+
+
+
+# StatisticsVECTOR_STORE_ID=vs_...
+
+docker-compose run --rm ingest python main.py stats
+
+│   ├── ingest/             # Ingestion service         ▼
+
+# Cleanup stale files
+
+docker-compose run --rm ingest python main.py cleanup# PostgreSQL
+
+```
+
+POSTGRES_DB=ai_knowledge_base│   │   ├── Dockerfile┌─────────────────────────────────────────┐
+
+### API Service
+
+POSTGRES_USER=postgres
+
+**Purpose**: REST API for semantic search
+
+POSTGRES_PASSWORD=your-secure-password│   │   ├── pyproject.toml│  1. SYNC (drive_sync.py)                │
+
+**Endpoints**:
+
+- `GET /` - Service information
+
+- `GET /health` - Health check
+
+- `POST /api/search` - Semantic search (JSON body)# API│   │   ├── main.py│     - List changed files                │
+
+- `GET /api/search` - Semantic search (query params)
+
+- `GET /docs` - Interactive API docs (Swagger UI)API_PORT=8000
+
+
+
+**Features**:```│   │   ├── purge.py│     - Download from Drive               │
+
+- Automatic metadata enrichment
+
+- Drive URLs and S3 presigned URLs
+
+- CORS support
+
+- Health checks### 2. Start Services│   │   └── src/            # Pipeline modules│     - Upload to S3                      │
+
+
+
+### PostgreSQL Database
+
+
+
+**Purpose**: Shared metadata storage```bash│   │       ├── config.py│     - Store metadata in SQLite          │
+
+
+
+**Schema**:# Start all services
+
+```sql
+
+-- File state trackingdocker-compose up -d│   │       ├── database.py└────────┬────────────────────────────────┘
+
+CREATE TABLE file_state (
+
+    id SERIAL PRIMARY KEY,
+
+    sha256 VARCHAR(64) UNIQUE NOT NULL,
+
+    s3_key TEXT NOT NULL,# Or use Makefile│   │       ├── drive_sync.py         │
+
+    original_name TEXT NOT NULL,
+
+    status VARCHAR(20) NOT NULL,make up
+
+    synced_at TIMESTAMP,
+
+    processed_at TIMESTAMP,│   │       ├── processor.py         ▼
+
+    indexed_at TIMESTAMP,
+
+    openai_file_id TEXT,# Check status
+
+    error_message TEXT
+
+);docker-compose ps│   │       ├── indexer.py┌─────────────────────────────────────────┐
+
+
+
+-- Google Drive mapping```
+
+CREATE TABLE drive_file_mapping (
+
+    id SERIAL PRIMARY KEY,│   │       └── utils.py│  2. PROCESS (processor.py)              │
+
+    sha256 VARCHAR(64) NOT NULL,
+
+    drive_file_id VARCHAR(255) NOT NULL,Services will be available at:
+
+    drive_file_name TEXT NOT NULL,
+
+    drive_parent_path TEXT,- **API**: http://localhost:8000│   └── api/                # API service│     - Fetch from S3                     │
+
+    drive_modified_time TIMESTAMP,
+
+    FOREIGN KEY (sha256) REFERENCES file_state(sha256)- **API Docs**: http://localhost:8000/docs
+
+);
+
+```- **PostgreSQL**: localhost:5432│       ├── Dockerfile│     - Process with Unstructured.io      │
+
+
+
+## 🔧 Processing Engines
+
+
+
+The system supports two processing engines:### 3. Run Ingestion│       ├── pyproject.toml│     - Extract text, tables, images      │
+
+
+
+### Unstructured.io (Default)
+
+
+
+Standard document processing with Tesseract OCR.```bash│       ├── main.py         # FastAPI app│     - Save structured data to S3        │
+
+
+
+**Configuration:**# Sync files from Google Drive
+
+```env
+
+PROCESSING_ENGINE=unstructuredmake ingest-sync│       └── README.md└────────┬────────────────────────────────┘
+
+```
+
+# or
+
+**Best for:**
+
+- Simple PDFs with good text layersdocker-compose run --rm ingest python main.py sync --max-files 10├── data/                   # Shared volume (SQLite)         │
+
+- Mixed document workflows
+
+- Standard processing needs
+
+
+
+### IBM Docling (Advanced)# Full pipeline (sync + process + index)│   └── pipeline.db         ▼
+
+
+
+IBM Research's advanced document parsing library with superior OCR and layout analysis.make ingest-full
+
+
+
+**Configuration:**# or└── README.md              # This file┌─────────────────────────────────────────┐
+
+```env
+
+PROCESSING_ENGINE=doclingdocker-compose run --rm ingest python main.py full --max-files 10
+
+```
+
+```│  3. INDEX (indexer.py)                  │
+
+**Features:**
+
+- **Superior OCR**: Multiple engines (Tesseract, RapidOCR, EasyOCR)# Show statistics
+
+- **Better Layout Analysis**: Advanced table/equation recognition
+
+- **2-3x Faster**: For complex documentsmake ingest-stats│     - Upload to OpenAI                  │
+
+- **Clean Markdown Export**: Well-structured output
+
+- **Multi-Format**: PDF, DOCX, PPTX, images```
+
+
+
+**Best for:**## 🚀 Quick Start│     - Add to Vector Store               │
+
+- Scanned documents requiring high-quality OCR
+
+- Complex layouts with tables and multi-column text### 4. Test API
+
+- Academic papers with equations and figures
+
+- Technical documents with diagrams│     - Enable semantic search            │
+
+- OCR failures from Unstructured
+
+```bash
+
+**Comparison:**
+
+# Check health### Prerequisites└────────┬────────────────────────────────┘
+
+| Feature | Unstructured | Docling |
+
+|---------|-------------|---------|curl http://localhost:8000/health
+
+| **PDF Layout Analysis** | Good | Excellent |
+
+| **OCR Quality** | Good | Excellent |         │
+
+| **Table Recognition** | Good | Excellent |
+
+| **Processing Speed** | Moderate | Fast (2-3x) |# Perform search
+
+| **Memory Usage** | Moderate | Low |
+
+| **Output Format** | Text + JSONL | Markdown + JSON |curl -X POST http://localhost:8000/api/search \- Docker & Docker Compose         ▼
+
+
+
+**Switching Engines:**  -H "Content-Type: application/json" \
+
+
+
+You can switch at any time - previously processed files remain unchanged:  -d '{"query": "Your question here", "max_results": 5}'- Google Cloud service account JSON file┌─────────────────┐
+
+
+
+```bash
+
+# Edit .env
+
+PROCESSING_ENGINE=docling# Or use GET- S3 credentials (AWS or DigitalOcean Spaces)│  OpenAI Vector  │
+
+
+
+# Restart servicescurl "http://localhost:8000/api/search?q=Your+question&max_results=5"
+
+docker-compose restart ingest
+
+```- OpenAI API key with Vector Store access│     Store       │
+
+
+
+## 📖 Usage Examples# Interactive docs
+
+
+
+### Running Ingestionopen http://localhost:8000/docs│  (Searchable)   │
+
+
+
+```bash```
+
+# Dry run (test without changes)
+
+docker-compose run --rm ingest python main.py --dry-run sync### 1. Configure Environment└─────────────────┘
+
+
+
+# Sync limited files## 🎯 Service Details
+
+docker-compose run --rm ingest python main.py sync --max-files 10
+
+```
+
+# Full pipeline with limits
+
+docker-compose run --rm ingest python main.py full --max-files 50### Ingest Service
+
+
+
+# Show statistics```bash
+
+docker-compose run --rm ingest python main.py stats
+
+**Purpose**: Batch processing of documents from Drive to Vector Store
+
+# Cleanup stale files
+
+docker-compose run --rm ingest python main.py cleanup# Copy example env file## 🚀 Quick Start
+
+```
+
+**Technology**:
+
+### Using the API
+
+- Python 3.11cp .env.example .env
+
+**Python:**
+
+```python- uv for dependency management
+
+import httpx
+
+- Isolated virtual environment### Prerequisites
+
+response = httpx.post(
+
+    "http://localhost:8000/api/search",- 150 packages (optimized)
+
+    json={"query": "Holocaust education", "max_results": 10}
+
+)# Edit with your credentials
+
+
+
+results = response.json()**Key Dependencies**:
+
+
+
+for result in results["results"]:- `boto3` - S3 storagenano .env- Python 3.11+
+
+    print(f"File: {result['metadata']['original_name']}")
+
+    print(f"Score: {result['score']}")- `google-api-python-client` - Google Drive API
+
+    print(f"Drive URL: {result['metadata']['drive_url']}")
+
+    print()- `openai` - Vector Store indexing```- Google Cloud service account with Drive API access
+
+```
+
+- `unstructured` - Document processing
+
+**JavaScript:**
+
+```javascript- `tqdm` - Progress tracking- AWS S3 bucket
+
+const response = await fetch('http://localhost:8000/api/search', {
+
+  method: 'POST',
+
+  headers: {'Content-Type': 'application/json'},
+
+  body: JSON.stringify({**Commands**:Required environment variables:- OpenAI API key with Vector Store access
+
+    query: 'Holocaust education',
+
+    max_results: 10```bash
+
+  })
+
+});# Sync from Drive```env- Unstructured.io API key (optional, for cloud processing)
+
+
+
+const data = await response.json();docker-compose run --rm ingest python main.py sync --max-files 10
+
+console.log(`Found ${data.count} results`);
+
+```# Google Drive
+
+
+
+**cURL:**# Process files
+
+```bash
+
+curl -X POST http://localhost:8000/api/search \docker-compose run --rm ingest python main.py process --max-files 10GOOGLE_SERVICE_ACCOUNT_FILE=./somer-services-458421-ee757e0c4238.json### Installation
+
+  -H "Content-Type: application/json" \
+
+  -d '{
+
+    "query": "What is Centropa?",
+
+    "max_results": 5# Index to Vector StoreGOOGLE_DRIVE_FOLDER_ID=your-folder-id
+
+  }'
+
+```docker-compose run --rm ingest python main.py index --max-files 10
+
+
+
+### Managing Services```bash
+
+
+
+```bash# Full pipeline
+
+# Start services
+
+docker-compose up -ddocker-compose run --rm ingest python main.py full --max-files 10# S3 Storage# Clone the repository
+
+
+
+# Stop services
+
+docker-compose down
+
+# StatisticsS3_ENDPOINT=https://your-s3-endpoint.comgit clone <your-repo-url>
+
+# Rebuild after code changes
+
+docker-compose builddocker-compose run --rm ingest python main.py stats
+
+
+
+# View logsS3_ACCESS_KEY=your-access-keycd ai-knowledge-base-ingest
+
+docker-compose logs -f api
+
+docker-compose logs -f ingest# Cleanup stale files
+
+
+
+# Restart specific servicedocker-compose run --rm ingest python main.py cleanupS3_SECRET_KEY=your-secret-key
+
+docker-compose restart api
+
+```
+
+# Remove everything (including volumes)
+
+docker-compose down -vS3_BUCKET=your-bucket-name# Install dependencies with uv (recommended)
+
+```
+
+### API Service
+
+## 🔧 Development
+
+S3_REGION=us-east-1uv sync
+
+### Local Development (Without Docker)
+
+**Purpose**: REST API for semantic search
+
+**API Service:**
+
+```bash
+
+cd services/api
+
+uv sync**Technology**:
+
+uv run uvicorn main:app --reload --port 8000
+
+```- Python 3.11# OpenAI# Or with pip
+
+
+
+**Ingest Service:**- FastAPI framework
+
+```bash
+
+cd services/ingest- uv for dependency managementOPENAI_API_KEY=sk-proj-...pip install -e .
+
+uv sync
+
+uv run python main.py sync --max-files 5- Isolated virtual environment
+
+```
+
+- 32 packages (minimal!)VECTOR_STORE_ID=vs_...```
+
+### Building Images
+
+
+
+```bash
+
+# Build all services**Key Dependencies**:
+
+docker-compose build
+
+- `fastapi` - Web framework
+
+# Build specific service
+
+docker-compose build api- `uvicorn` - ASGI server# PostgreSQL### Configuration
+
+docker-compose build ingest
+
+- `httpx` - HTTP client
+
+# Build with no cache
+
+docker-compose build --no-cache- `boto3` - S3 presigned URLsPOSTGRES_DB=ai_knowledge_base
+
+```
+
+- `python-dotenv` - Configuration
+
+### Makefile Commands
+
+POSTGRES_USER=postgres1. Copy the example environment file:
+
+```bash
+
+make help           # Show all commands**Endpoints**:
+
+make build          # Build all Docker images
+
+make up             # Start all services- `GET /` - Service informationPOSTGRES_PASSWORD=your-secure-password```bash
+
+make down           # Stop all services
+
+make logs           # View logs from all services- `GET /health` - Health check
+
+make restart        # Restart all services
+
+make clean          # Remove all containers and volumes- `POST /api/search` - Semantic search (JSON body)cp .env.example .env
+
+
+
+# Ingestion- `GET /api/search` - Semantic search (URL params)
+
+make ingest-sync    # Sync files from Drive
+
+make ingest-process # Process files- `GET /docs` - Interactive API docs (Swagger UI)# API```
+
+make ingest-full    # Run full pipeline
+
+make ingest-stats   # Show statistics
+
+
+
+# API**Features**:API_PORT=8000
+
+make api-test       # Test API health
+
+make api-search     # Example search query- Automatic metadata enrichment
+
+
+
+# Development- Drive URLs and S3 presigned URLs```2. Edit `.env` with your credentials:
+
+make dev-api        # Run API locally (no Docker)
+
+make dev-ingest     # Run ingest locally (no Docker)- CORS support
+
+```
+
+- Health checks```env
+
+## 📊 Monitoring
+
+- OpenAPI/Swagger documentation
+
+### Check Service Status
+
+### 2. Start Services# Google Drive
+
+```bash
+
+# All services### PostgreSQL Database
+
+docker-compose ps
+
+GOOGLE_CREDENTIALS_FILE=path/to/service-account.json
+
+# Logs (all services)
+
+docker-compose logs -f**Purpose**: Shared metadata storage
+
+
+
+# Logs (specific service)```bashDRIVE_FOLDER_ID=your-drive-folder-id
+
+docker-compose logs -f api
+
+docker-compose logs -f ingest**Technology**:
+
+docker-compose logs -f postgres
+
+- PostgreSQL 16 Alpine# Start all services
+
+# Resource usage
+
+docker stats- Persistent volumes
+
+```
+
+- Health checksdocker-compose up -d# AWS S3
+
+### Health Checks
+
+- Automatic initialization
+
+```bash
+
+# API healthAWS_ACCESS_KEY_ID=your-access-key
+
+curl http://localhost:8000/health
+
+**Schema**:
+
+# PostgreSQL health
+
+docker-compose exec postgres pg_isready```sql# Check statusAWS_SECRET_ACCESS_KEY=your-secret-key
+
+
+
+# Check all services-- File state tracking
+
+docker-compose ps
+
+```CREATE TABLE file_state (docker-compose psAWS_REGION=us-east-1
+
+
+
+### Database Queries    id SERIAL PRIMARY KEY,
+
+
+
+```bash    sha256 VARCHAR(64) UNIQUE NOT NULL,S3_BUCKET_NAME=your-bucket-name
+
+# Connect to PostgreSQL
+
+docker-compose exec postgres psql -U postgres -d ai_knowledge_base    s3_key TEXT NOT NULL,
+
+
+
+# Check file counts    original_name TEXT NOT NULL,# View logs
+
+SELECT status, COUNT(*) FROM file_state GROUP BY status;
+
+    status VARCHAR(20) NOT NULL,
+
+# View recent files
+
+SELECT original_name, status, synced_at     synced_at TIMESTAMP,docker-compose logs -f# OpenAI
+
+FROM file_state 
+
+ORDER BY synced_at DESC     processed_at TIMESTAMP,
+
+LIMIT 10;
+
+    indexed_at TIMESTAMP,```OPENAI_API_KEY=sk-proj-...
+
+# Check for errors
+
+SELECT original_name, error_message     openai_file_id TEXT,
+
+FROM file_state 
+
+WHERE status LIKE 'failed%'     error_message TEXTVECTOR_STORE_ID=vs_...
+
+ORDER BY synced_at DESC;
+
+```);
+
+
+
+## 🔒 Security Best PracticesServices will be available at:
+
+
+
+1. **Never commit secrets**-- Google Drive mapping
+
+   - Keep `.env` file local (in `.gitignore`)
+
+   - Rotate API keys regularlyCREATE TABLE drive_file_mapping (- **API**: http://localhost:8000# Unstructured.io (optional)
+
+   - Use environment-specific configurations
+
+    id SERIAL PRIMARY KEY,
+
+2. **Secure service account**
+
+   - Limit Drive folder access    sha256 VARCHAR(64) NOT NULL,- **API Docs**: http://localhost:8000/docsUNSTRUCTURED_API_KEY=your-api-key
+
+   - Use least-privilege permissions
+
+   - Store JSON file securely    drive_file_id VARCHAR(255) NOT NULL,
+
+
+
+3. **Database security**    drive_file_name TEXT NOT NULL,- **PostgreSQL**: localhost:5432UNSTRUCTURED_API_URL=https://api.unstructuredapp.io/general/v0/general
+
+   - Use strong PostgreSQL password
+
+   - Don't expose port 5432 publicly    drive_parent_path TEXT,
+
+   - Regular backups
+
+   - Enable SSL in production    drive_modified_time TIMESTAMP,```
+
+
+
+4. **S3 bucket**    FOREIGN KEY (sha256) REFERENCES file_state(sha256)
+
+   - Enable encryption at rest
+
+   - Use presigned URLs (1 hour expiry));### 3. Run Ingestion
+
+   - Restrict IAM policies
+
+   - Enable versioning```
+
+
+
+5. **API security** (Production)## 📖 Usage
+
+   - Add authentication middleware
+
+   - Enable HTTPS/TLS## 🛠️ Development
+
+   - Configure CORS appropriately
+
+   - Implement rate limiting```bash
+
+   - Use API keys or JWT tokens
+
+### Local Development (Without Docker)
+
+## 🐛 Troubleshooting
+
+# Sync files from Google Drive### Basic Commands
+
+### Services won't start
+
+**API Service:**
+
+```bash
+
+# Check logs```bashdocker-compose run --rm ingest uv run python main.py sync --max-files 10
+
+docker-compose logs
+
+cd services/api
+
+# Rebuild images
+
+docker-compose build --no-cacheuv sync```bash
+
+docker-compose up -d
+
+```uv run uvicorn main:app --reload --port 8000
+
+
+
+### API can't connect to database```# Process files with Unstructured.io# Full pipeline - sync, process, and index
+
+
+
+```bash
+
+# Check PostgreSQL is running
+
+docker-compose ps postgres**Ingest Service:**docker-compose run --rm ingest uv run python main.py process --max-files 10uv run python main.py
+
+
+
+# Test connectivity```bash
+
+docker-compose exec api ping postgres
+
+cd services/ingest
+
+# Verify environment variables
+
+docker-compose exec api env | grep POSTGRESuv sync
+
+```
+
+uv run python main.py sync --max-files 5# Index to OpenAI Vector Store# Individual stages
+
+### Ingest can't access service account
+
+```
+
+```bash
+
+# Check file existsdocker-compose run --rm ingest uv run python main.py index --max-files 10uv run python main.py sync              # Sync from Drive to S3
+
+ls -la somer-services-458421-ee757e0c4238.json
+
+### Building Images
+
+# Verify mount in container
+
+docker-compose run --rm ingest ls -la /app/service-account.jsonuv run python main.py process           # Process files with Unstructured
+
+```
+
+```bash
+
+### Port conflicts
+
+# Build all services# Or run full pipelineuv run python main.py index             # Index files to OpenAI
+
+```bash
+
+# Change ports in .envdocker-compose build
+
+API_PORT=8001
+
+POSTGRES_PORT=5433# ordocker-compose run --rm ingest uv run python main.py full --max-files 10
+
+
+
+# Restart servicesmake build
+
+docker-compose down
+
+docker-compose up -d```# Dry run (test without changes)
+
+```
+
+# Build specific service
+
+### Dependencies not updating
+
+docker-compose build apiuv run python main.py --dry-run sync
+
+```bash
+
+# Rebuild without cachedocker-compose build ingest
+
+cd services/ingest  # or services/api
+
+uv lock --upgrade### 4. Test API
+
+cd ../..
+
+docker-compose build --no-cache ingest  # or api# Build with no cache
+
+```
+
+docker-compose build --no-cache# Limit number of files
+
+## 📈 Performance
+
+```
+
+Typical processing times:
+
+- **Sync**: ~1-2 seconds per file (depends on Drive API)```bashuv run python main.py --max-files 10 sync
+
+- **Process (Unstructured)**: ~5-10 seconds per file
+
+- **Process (Docling)**: ~2-5 seconds per file (2-3x faster)### Makefile Commands
+
+- **Index**: ~2-3 seconds per file (depends on OpenAI API)
+
+# Check health```
+
+Batch recommendations:
+
+- Start with `--max-files 10` to test```bash
+
+- Scale up to `--max-files 100` for production
+
+- Use `--dry-run` to preview changesmake help           # Show all commandscurl http://localhost:8000/health
+
+
+
+## 📚 Additional Resourcesmake build          # Build all Docker images
+
+
+
+- **api-reference/** - Complete query API documentation and samplesmake up             # Start all services### Pipeline Stages
+
+- **test/** - Test files and Custom GPT documentation
+
+- **Makefile** - Run `make help` for all commandsmake down           # Stop all services
+
+- **API Docs** - http://localhost:8000/docs (when running)
+
+make logs           # View logs from all services# Perform search
+
+## 🎓 Next Steps
+
+make restart        # Restart all services
+
+### For Ingestion Setup
+
+1. ✅ Configure `.env` with your credentialsmake clean          # Remove all containers and volumescurl -X POST http://localhost:8000/api/search \#### 1. Sync Stage
+
+2. ✅ Start services: `make up`
+
+3. ✅ Run ingestion: `make ingest-sync`
+
+4. ✅ Monitor logs: `make logs`
+
+# Ingestion  -H "Content-Type: application/json" \Syncs files from Google Drive to S3:
+
+### For API Development
+
+1. ✅ Check API health: `make api-test`make ingest-sync    # Sync files from Drive
+
+2. ✅ Visit interactive docs: http://localhost:8000/docs
+
+3. ✅ Test search: `curl "http://localhost:8000/api/search?q=test"`make ingest-process # Process files  -d '{"query": "What is Centropa?", "max_results": 5}'- Lists all files in the configured Drive folder (recursive)
+
+4. ✅ Review `api-reference/` for advanced examples
+
+make ingest-full    # Run full pipeline
+
+### Production Deployment
+
+1. ✅ Set up managed PostgreSQLmake ingest-stats   # Show statistics- Detects changes using modification timestamps and SHA256 hashes
+
+2. ✅ Configure HTTPS/TLS for API
+
+3. ✅ Add authentication middleware
+
+4. ✅ Set up monitoring (Prometheus, Grafana)
+
+5. ✅ Configure automated backups# API# Or use GET- Downloads changed files from Drive
+
+6. ✅ Schedule ingestion with cron
+
+7. ✅ Enable rate limitingmake api-test       # Test API health
+
+
+
+## 🤝 Contributingmake api-search     # Example search querycurl "http://localhost:8000/api/search?q=Holocaust+education&max_results=5"- Uploads to S3 with metadata
+
+
+
+1. Make changes in appropriate service directory
+
+2. Test locally with `docker-compose up`
+
+3. Update documentation if needed# Development```- Exports Google Workspace files (Docs, Sheets, Slides) to Office formats
+
+4. Commit with clear messages
+
+make dev-api        # Run API locally (no Docker)
+
+## 📝 License
+
+make dev-ingest     # Run ingest locally (no Docker)- Stores file state in SQLite database
+
+Internal use only.
+
+```
+
+---
+
 ## 🐳 Docker Services
+
+**Ready to start?**
 
 ## 📊 Monitoring
 
 ```bash
 
-### Check Service Status
+# 1. Configure```bash
 
-### Ingest Serviceuv run python main.py sync --max-files 100
+cp .env.example .env
+
+nano .env### Check Service Status
+
+
+
+# 2. Start everything### Ingest Serviceuv run python main.py sync --max-files 100
+
+make up
 
 ```bash
 
-# All services```
+# 3. Run ingestion
 
-docker-compose ps
+make ingest-sync# All services```
+
+
+
+# 4. Test APIdocker-compose ps
+
+curl http://localhost:8000/health
 
 **Purpose**: Sync, process, and index documents
 
-# Logs (all services)
+# 5. Interactive docs
+
+open http://localhost:8000/docs# Logs (all services)
+
+```
 
 docker-compose logs -f#### 2. Process Stage
+
+🚀 **Your AI Knowledge Base is ready!**
 
 
 
