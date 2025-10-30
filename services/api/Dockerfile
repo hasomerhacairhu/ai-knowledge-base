@@ -26,7 +26,7 @@ COPY .python-version ./
 
 # Create virtual environment and install dependencies
 RUN uv venv /app/.venv
-RUN uv sync --frozen --no-dev
+RUN uv pip install --python /app/.venv/bin/python -r pyproject.toml
 
 # Copy application code
 COPY main.py ./
