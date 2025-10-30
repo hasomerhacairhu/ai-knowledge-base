@@ -45,9 +45,8 @@ class ContentItem(BaseModel):
 
 class FileMetadata(BaseModel):
     original_name: str
-    s3_presigned_url: str
-    txt_file_url: Optional[str] = None
-    txt_size_bytes: Optional[int] = None
+    original_file_download_url: str
+    processed_text_download_url: Optional[str] = None
     sha256: str
 
 
@@ -182,15 +181,14 @@ def get_file_metadata(sha256_hash: str) -> Optional[FileMetadata]:
         if result:
             original_name, s3_key, sha256 = result
             
-            # Generate S3 presigned URL for original file (7 days)
-            s3_presigned_url = None
-            txt_file_url = None
-            txt_size_bytes = None
+            # Generate S3 presigned URLs (7 days)
+            original_file_download_url = None
+            processed_text_download_url = None
             
             if s3_key:
                 try:
-                    # Original file URL (7 days = 604800 seconds)
-                    s3_presigned_url = s3_client.generate_presigned_url(
+                    # Original file download URL (7 days = 604800 seconds)
+                    original_file_download_url = s3_client.generate_presigned_url(
                         'get_object',
                         Params={
                             'Bucket': os.getenv("S3_BUCKET"),
@@ -199,9 +197,9 @@ def get_file_metadata(sha256_hash: str) -> Optional[FileMetadata]:
                         ExpiresIn=604800
                     )
                     
-                    # Processed txt file URL (7 days)
+                    # Processed text file download URL (7 days)
                     txt_key = f"{s3_key}.txt"
-                    txt_file_url = s3_client.generate_presigned_url(
+                    processed_text_download_url = s3_client.generate_presigned_url(
                         'get_object',
                         Params={
                             'Bucket': os.getenv("S3_BUCKET"),
@@ -209,27 +207,14 @@ def get_file_metadata(sha256_hash: str) -> Optional[FileMetadata]:
                         },
                         ExpiresIn=604800
                     )
-                    
-                    # Get txt file size from S3
-                    try:
-                        head_response = s3_client.head_object(
-                            Bucket=os.getenv("S3_BUCKET"),
-                            Key=txt_key
-                        )
-                        txt_size_bytes = head_response.get('ContentLength')
-                    except Exception:
-                        # Txt file might not exist yet
-                        logger.debug(f"Processed txt file not found for s3_key: {s3_key}")
-                        pass
                         
                 except Exception as e:
                     logger.error(f"⚠️  Could not generate S3 URL for {sha256_hash}: {e}")
             
             return FileMetadata(
                 original_name=original_name,
-                s3_presigned_url=s3_presigned_url or "",
-                txt_file_url=txt_file_url,
-                txt_size_bytes=txt_size_bytes,
+                original_file_download_url=original_file_download_url or "",
+                processed_text_download_url=processed_text_download_url,
                 sha256=sha256
             )
         
