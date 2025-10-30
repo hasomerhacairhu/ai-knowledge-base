@@ -88,11 +88,13 @@ async def lifespan(app: FastAPI):
     # Initialize S3 client
     config = Config(
         region_name=os.getenv("S3_REGION", "us-east-1"),
+        signature_version='s3v4',
         retries={'max_attempts': 3, 'mode': 'adaptive'}
     )
     
     s3_client = boto3.client(
         's3',
+        region_name=os.getenv("S3_REGION", "us-east-1"),
         endpoint_url=os.getenv("S3_ENDPOINT"),
         aws_access_key_id=os.getenv("S3_ACCESS_KEY"),
         aws_secret_access_key=os.getenv("S3_SECRET_KEY"),
