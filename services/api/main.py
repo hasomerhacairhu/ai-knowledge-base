@@ -399,10 +399,8 @@ async def search(request: SearchRequest):
 
 @app.get("/api/search", response_model=SearchResponse)
 async def search_get(
-    q: str = Query(..., description="Primary search query"),
-    q1: Optional[str] = Query(None, description="Additional search query 1"),
-    q2: Optional[str] = Query(None, description="Additional search query 2"),
-    q3: Optional[str] = Query(None, description="Additional search query 3"),
+    qhu: Optional[str] = Query(None, description="Hungarian search query"),
+    qen: Optional[str] = Query(None, description="English search query"),
     max_results: int = Query(10, ge=1, le=50, description="Maximum results"),
     rewrite: bool = Query(True, description="Rewrite query for search"),
     multilingual: bool = Query(True, description="Enable multilingual search"),
@@ -412,8 +410,9 @@ async def search_get(
     GET endpoint for search (convenience method)
     
     Args:
-        q: Primary search query (required)
-        q1, q2, q3: Additional search queries (optional)
+        qhu: Hungarian search query (optional)
+        qen: English search query (optional)
+        qen2, qen3: Additional English search queries (optional)
         max_results: Maximum number of results
         rewrite: Whether to rewrite the query
         multilingual: Enable multilingual search (searches in both languages)
@@ -423,21 +422,27 @@ async def search_get(
         SearchResponse with enriched results
         
     Examples:
-        /api/search?q=Holocaust education&max_results=5
-        /api/search?q=Holocaust education&q1=Holokauszt oktatás&max_results=10
-        /api/search?q=leadership&q1=vezetés&q2=vezető képzés&max_results=15
+        /api/search?qen=Holocaust education&max_results=5
+        /api/search?qen=Holocaust education&qhu=Holokauszt oktatás&max_results=10
+        /api/search?qhu=vezetés&qen=leadership&qen2=organizational culture&max_results=15
     """
     # Collect all non-None queries
-    queries = [q]
-    if q1:
-        queries.append(q1)
-    if q2:
-        queries.append(q2)
-    if q3:
-        queries.append(q3)
+    queries = []
+    if qhu:
+        queries.append(qhu)
+    if qen:
+        queries.append(qen)
+    if qen2:
+        queries.append(qen2)
+    if qen3:
+        queries.append(qen3)
+    
+    # Must have at least one query
+    if not queries:
+        raise HTTPException(status_code=400, detail="At least one query parameter (qhu, qen) is required")
     
     request = SearchRequest(
-        query=queries if len(queries) > 1 else q,
+        query=queries if len(queries) > 1 else queries[0],
         max_results=max_results,
         multilingual=multilingual,
         merge_results=merge_results,
