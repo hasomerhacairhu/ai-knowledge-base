@@ -401,6 +401,8 @@ async def search(request: SearchRequest):
 async def search_get(
     qhu: Optional[str] = Query(None, description="Hungarian search query"),
     qen: Optional[str] = Query(None, description="English search query"),
+    qen2: Optional[str] = Query(None, description="Additional English search query 2"),
+    qen3: Optional[str] = Query(None, description="Additional English search query 3"),
     max_results: int = Query(10, ge=1, le=50, description="Maximum results"),
     rewrite: bool = Query(True, description="Rewrite query for search"),
     multilingual: bool = Query(True, description="Enable multilingual search"),
