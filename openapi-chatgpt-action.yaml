@@ -11,6 +11,58 @@ servers:
   - url: https://api.z10n.dev
     description: Production API servera
 paths:
+  /api/context/{sha256}:
+    get:
+      operationId: getExpandedContext
+      summary: Get extended context around a text snippet in a document
+      description: >
+        Returns ±40k characters around a specific text snippet for deeper understanding.
+        Useful when a search result needs more surrounding context.
+      parameters:
+        - name: sha256
+          in: path
+          required: true
+          description: Document SHA256 hash from search results
+          schema:
+            type: string
+            pattern: ^[a-f0-9]{64}$
+            example: abc123def4567890...
+        - name: snippet
+          in: query
+          required: true
+          description: Text snippet from search result to locate in full document
+          schema:
+            type: string
+            minLength: 10
+            maxLength: 2000
+            example: leadership principles in scouting
+        - name: context_chars
+          in: query
+          required: false
+          description: Characters to return before and after match (1k-100k, default 40k)
+          schema:
+            type: integer
+            minimum: 1000
+            maximum: 100000
+            default: 40000
+            example: 40000
+      responses:
+        "200":
+          description: Extended context successfully retrieved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextExpansionResponse"
+        "404":
+          description: Document or snippet not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                    example: Snippet not found in document
   /api/search:
     get:
       operationId: searchKnowledgeBase
@@ -233,3 +285,47 @@ components:
           description: URL to download processed text
           nullable: true
           example: https://api.z10n.dev/api/text/abc123...
+    ContextExpansionResponse:
+      type: object
+      required:
+        - sha256
+        - original_name
+        - matched_text
+        - context_before
+        - context_after
+        - context_length
+        - match_position
+        - total_document_length
+      properties:
+        sha256:
+          type: string
+          description: Document SHA256 hash
+          pattern: ^[a-f0-9]{64}$
+        original_name:
+          type: string
+          description: Original filename
+          example: Boy_Scouts_handbook.pdf
+        matched_text:
+          type: string
+          description: The matched text snippet from the document
+          example: Leadership principles in scouting emphasize...
+        context_before:
+          type: string
+          description: Text content before the matched snippet (up to context_chars)
+          example: The chapter on youth development discusses...
+        context_after:
+          type: string
+          description: Text content after the matched snippet (up to context_chars)
+          example: These principles form the foundation...
+        context_length:
+          type: integer
+          description: Total length of returned context (before + match + after)
+          example: 85432
+        match_position:
+          type: integer
+          description: Character position of match in full document
+          example: 12500
+        total_document_length:
+          type: integer
+          description: Total character length of the full document
+          example: 245000

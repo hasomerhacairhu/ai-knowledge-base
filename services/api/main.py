@@ -514,6 +514,127 @@ async def download_text(sha256: str):
     return RedirectResponse(url=url)
 
 
+class ContextExpansionResponse(BaseModel):
+    sha256: str
+    original_name: str
+    matched_text: str
+    context_before: str
+    context_after: str
+    context_length: int
+    match_position: int
+    total_document_length: int
+
+
+@app.get("/api/context/{sha256}", response_model=ContextExpansionResponse)
+async def get_context(
+    sha256: str,
+    snippet: str = Query(..., min_length=10, max_length=2000, description="Text snippet to find in document"),
+    context_chars: int = Query(40000, ge=1000, le=100000, description="Characters to return before and after (default 40k)")
+):
+    """
+    Get extended context around a specific text snippet in a document
+    
+    Args:
+        sha256: Document SHA256 hash
+        snippet: Text snippet to locate (will be matched with fuzzy search)
+        context_chars: Number of characters to return before and after the match
+        
+    Returns:
+        Extended context around the matched snippet
+        
+    Example:
+        /api/context/{sha256}?snippet=leadership+principles&context_chars=40000
+    """
+    logger.info(f"Context expansion request for {sha256[:16]}, snippet length: {len(snippet)}")
+    
+    # Get document metadata
+    try:
+        conn = db_pool.getconn()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT original_name, s3_key, processed_text_size FROM file_state WHERE sha256 = %s",
+            (sha256,)
+        )
+        result = cursor.fetchone()
+        cursor.close()
+        db_pool.putconn(conn)
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        original_name, s3_key, total_size = result
+        
+    except Exception as e:
+        logger.error(f"Database error: {e}")
+        raise HTTPException(status_code=500, detail="Database error")
+    
+    # Download the full processed text from S3
+    try:
+        s3_bucket = os.getenv("S3_BUCKET")
+        text_key = s3_key.replace('.txt', '_processed.txt') if not s3_key.endswith('_processed.txt') else s3_key
+        
+        logger.info(f"Downloading text from S3: {text_key}")
+        response = s3_client.get_object(Bucket=s3_bucket, Key=text_key)
+        full_text = response['Body'].read().decode('utf-8')
+        
+    except Exception as e:
+        logger.error(f"S3 download error: {e}")
+        raise HTTPException(status_code=404, detail="Processed text not found in storage")
+    
+    # Find the snippet in the text (case-insensitive, normalize whitespace)
+    import re
+    
+    # Normalize whitespace in both snippet and text for better matching
+    normalized_snippet = ' '.join(snippet.split())
+    normalized_text = ' '.join(full_text.split())
+    
+    # Try exact match first
+    match_pos = normalized_text.lower().find(normalized_snippet.lower())
+    
+    if match_pos == -1:
+        # Try fuzzy matching - split into words and find sequence
+        snippet_words = normalized_snippet.lower().split()
+        if len(snippet_words) >= 3:
+            # Try matching first 3 words
+            search_pattern = ' '.join(snippet_words[:3])
+            match_pos = normalized_text.lower().find(search_pattern)
+    
+    if match_pos == -1:
+        logger.warning(f"Snippet not found in document {sha256[:16]}")
+        raise HTTPException(
+            status_code=404, 
+            detail="Snippet not found in document. Try a longer or more distinctive text excerpt."
+        )
+    
+    # Map position back to original text (approximate)
+    # This is a simple approach - for production you might want more sophisticated alignment
+    chars_before_match = len(' '.join(full_text[:match_pos].split()))
+    
+    # Extract context
+    start_pos = max(0, chars_before_match - context_chars)
+    end_pos = min(len(full_text), chars_before_match + len(snippet) + context_chars)
+    
+    context_before = full_text[start_pos:chars_before_match]
+    matched_text = full_text[chars_before_match:chars_before_match + len(snippet)]
+    context_after = full_text[chars_before_match + len(snippet):end_pos]
+    
+    logger.info(
+        f"Context extracted: {len(context_before)} chars before, "
+        f"{len(matched_text)} chars match, {len(context_after)} chars after"
+    )
+    
+    return ContextExpansionResponse(
+        sha256=sha256,
+        original_name=original_name,
+        matched_text=matched_text,
+        context_before=context_before,
+        context_after=context_after,
+        context_length=len(context_before) + len(matched_text) + len(context_after),
+        match_position=chars_before_match,
+        total_document_length=len(full_text)
+    )
+
+
 @app.post("/api/search", response_model=SearchResponse)
 async def search(request: SearchRequest):
     """
