@@ -42,6 +42,8 @@ class SearchRequest(BaseModel):
     merge_results: bool = Field(True, description="Apply diversity filter to limit chunks per document")
     use_hybrid_search: bool = Field(True, description="Enable hybrid search (vector + keyword matching)")
     score_threshold: float = Field(0.0, ge=0.0, le=1.0, description="Minimum relevance score (0.0-1.0)")
+    embedding_weight: float = Field(0.7, ge=0.0, le=1.0, description="Weight for semantic similarity (0.0-1.0)")
+    text_weight: float = Field(0.3, ge=0.0, le=1.0, description="Weight for keyword matching (0.0-1.0)")
 
 
 class ContentItem(BaseModel):
@@ -365,7 +367,9 @@ async def vector_store_search(
     max_num_results: int = 10,
     rewrite_query: bool = True,
     use_hybrid_search: bool = True,
-    score_threshold: float = 0.0
+    score_threshold: float = 0.0,
+    embedding_weight: float = 0.7,
+    text_weight: float = 0.3
 ) -> Dict[str, Any]:
     """
     Direct search of vector store with caching.
@@ -376,6 +380,8 @@ async def vector_store_search(
         rewrite_query: Whether to optimize query for vector search
         use_hybrid_search: Enable hybrid search (vector + keyword)
         score_threshold: Minimum relevance score (0.0-1.0)
+        embedding_weight: Weight for semantic similarity
+        text_weight: Weight for keyword matching
         
     Returns:
         Search results with relevant document chunks
@@ -407,12 +413,12 @@ async def vector_store_search(
         
         if use_hybrid_search:
             ranking_options["hybrid_search"] = {
-                "embedding_weight": 0.7,  # 70% semantic similarity
-                "text_weight": 0.3        # 30% keyword matching
+                "embedding_weight": embedding_weight,
+                "text_weight": text_weight
             }
         
         payload["ranking_options"] = ranking_options
-        logger.info(f"Using hybrid search with score_threshold={score_threshold}")
+        logger.info(f"Hybrid search: embedding={embedding_weight}, text={text_weight}, threshold={score_threshold}")
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(endpoint, headers=openai_headers, json=payload)
@@ -540,7 +546,9 @@ async def search(request: SearchRequest):
                 max_num_results=50,
                 rewrite_query=request.rewrite_query,
                 use_hybrid_search=request.use_hybrid_search,
-                score_threshold=request.score_threshold
+                score_threshold=request.score_threshold,
+                embedding_weight=request.embedding_weight,
+                text_weight=request.text_weight
             )
             
             # Enrich results with metadata
@@ -620,7 +628,9 @@ async def search(request: SearchRequest):
 async def search_get(
     qhu: str = Query(..., description="Hungarian search query (required)"),
     qen: str = Query(..., description="English search query (required)"),
-    page: int = Query(1, ge=1, description="Page number (1-indexed)")
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    embedding_weight: float = Query(0.7, ge=0.0, le=1.0, description="Weight for semantic similarity (0.0-1.0)"),
+    text_weight: float = Query(0.3, ge=0.0, le=1.0, description="Weight for keyword matching (0.0-1.0)")
 ):
     """
     GET endpoint for bilingual search with automatic pagination based on 100k character limit
@@ -629,12 +639,16 @@ async def search_get(
         qhu: Hungarian search query (required)
         qen: English search query (required)
         page: Page number (1-indexed)
+        embedding_weight: Weight for semantic similarity (default: 0.7 for conceptual queries)
+        text_weight: Weight for keyword matching (default: 0.3 for specific terms)
         
     Returns:
         SearchResponse with paginated results (max 100,000 characters per page)
         
     Examples:
         /api/search?qhu=Holokauszt oktatás&qen=Holocaust education&page=1
+        /api/search?qhu=leadership&qen=leadership&page=1&embedding_weight=0.9&text_weight=0.1  # More semantic
+        /api/search?qhu=Péter Novák&qen=Peter Novak&page=1&embedding_weight=0.5&text_weight=0.5  # More keyword
     """
     # Both queries required
     request = SearchRequest(
@@ -642,7 +656,9 @@ async def search_get(
         rewrite_query=True,
         merge_results=True,  # Enable diversity filter
         use_hybrid_search=True,  # Enable hybrid search (vector + keyword)
-        score_threshold=0.3  # Filter low-relevance results
+        score_threshold=0.3,  # Filter low-relevance results
+        embedding_weight=embedding_weight,
+        text_weight=text_weight
     )
     
     # Get full results
