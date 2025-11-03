@@ -6,7 +6,7 @@ info:
     Semantic search API for searching through a knowledge base of educational materials  in both Hungarian and English.
     Uses OpenAI's vector store for semantic similarity search.
 
-    **Features:** - Bilingual search (Hungarian + English required) - Automatic pagination (max 100,000 characters per response) - Instant page navigation via Redis caching - Short proxy URLs for file downloads - Hybrid search (semantic + keyword) with configurable weights
+    **Features:** - Bilingual search (Hungarian + English required) - Automatic pagination (max 100,000 characters per response) - Instant page navigation via Redis caching - Short proxy URLs for file downloads - Hybrid search (semantic + keyword) with configurable weights - Context expansion (±40k chars around any snippet)
 servers:
   - url: https://api.z10n.dev
     description: Production API servera
@@ -16,8 +16,8 @@ paths:
       operationId: getExpandedContext
       summary: Get extended context around a text snippet in a document
       description: >
-        Returns ±40k characters around a specific text snippet for deeper understanding.
-        Useful when a search result needs more surrounding context.
+        Retrieves ±40k chars around a snippet for deeper understanding. Use when search results need more context.
+        GPT workflow: 1) Search finds relevant snippet 2) Call this to get full surrounding text 3) Answer with complete context.
       parameters:
         - name: sha256
           in: path
@@ -30,7 +30,7 @@ paths:
         - name: snippet
           in: query
           required: true
-          description: Text snippet from search result to locate in full document
+          description: Text snippet from search result to find in document. Use 20-100 chars from search result content for best matching.
           schema:
             type: string
             minLength: 10
@@ -39,7 +39,7 @@ paths:
         - name: context_chars
           in: query
           required: false
-          description: Characters to return before and after match (1k-100k, default 40k)
+          description: Chars before and after match. Use 40k for comprehensive context, 10k for focused answers.
           schema:
             type: integer
             minimum: 1000
@@ -53,6 +53,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ContextExpansionResponse"
+              examples:
+                context_example:
+                  summary: Context expansion around leadership snippet
+                  value:
+                    sha256: 2bf42ff2ab25209fc6553d95bae7e3470a1e00024162df6b84a3766c028d5d6e
+                    original_name: You are my leader_YOUAREMYLEADER-Tool.pdf
+                    matched_text: How did you feel as a leader
+                    context_before: "...observers to read their notes. The observations will be evaluated with the leaders and the players.\n\n3. Ask leaders questions: "
+                    context_after: "?\", \"How was your delegation and management style?\", \"When you are in a stress, how do you behave to the others?\"..."
+                    context_length: 12834
+                    match_position: 3736
+                    total_document_length: 12834
         "404":
           description: Document or snippet not found
           content:
