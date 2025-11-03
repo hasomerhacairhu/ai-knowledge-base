@@ -617,11 +617,10 @@ async def search_get(
     qen3: Optional[str] = Query(None, description="Additional English search query 3"),
     rewrite: bool = Query(True, description="Rewrite query for search"),
     merge_results: bool = Query(True, description="Merge and deduplicate results"),
-    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
-    page_size: int = Query(20, ge=1, le=50, description="Results per page (max 50)")
+    page: int = Query(1, ge=1, description="Page number (1-indexed)")
 ):
     """
-    GET endpoint for search with pagination
+    GET endpoint for search with automatic pagination based on 100k character limit
     
     Args:
         qhu: Hungarian search query (optional)
@@ -630,14 +629,13 @@ async def search_get(
         rewrite: Whether to rewrite the query
         merge_results: Merge and deduplicate results from multiple queries
         page: Page number (1-indexed)
-        page_size: Number of results per page (1-50)
         
     Returns:
-        SearchResponse with paginated results
+        SearchResponse with paginated results (max 100,000 characters per page)
         
     Examples:
-        /api/search?qen=Holocaust education&page=1&page_size=10
-        /api/search?qen=Holocaust education&qhu=Holokauszt oktatás&page=2&page_size=20
+        /api/search?qen=Holocaust education&page=1
+        /api/search?qen=Holocaust education&qhu=Holokauszt oktatás&page=2
     """
     # Collect all non-None queries
     queries = []
@@ -663,19 +661,62 @@ async def search_get(
     # Get full results
     full_response = await search(request)
     
-    # Apply pagination
-    total = len(full_response.results)
-    start_idx = (page - 1) * page_size
-    end_idx = start_idx + page_size
+    # Apply pagination based on 100k character limit
+    max_chars = 100000
+    total_results = len(full_response.results)
     
-    paginated_results = full_response.results[start_idx:end_idx]
-    has_more = end_idx < total
+    # Build pages dynamically by character count
+    pages = []
+    current_page = []
+    current_chars = 0
+    
+    # Account for base response structure overhead (query, count, total, etc.)
+    base_overhead = len(json.dumps({
+        "query": full_response.query,
+        "count": 0,
+        "total": total_results,
+        "page": 1,
+        "page_size": 0,
+        "has_more": False,
+        "results": []
+    }))
+    
+    for result in full_response.results:
+        # Calculate size of this result
+        result_json = result.model_dump_json()
+        result_chars = len(result_json)
+        
+        # Check if adding this result would exceed limit
+        if current_chars + result_chars + base_overhead > max_chars and current_page:
+            # Save current page and start new one
+            pages.append(current_page)
+            current_page = [result]
+            current_chars = result_chars
+        else:
+            current_page.append(result)
+            current_chars += result_chars
+    
+    # Add last page if not empty
+    if current_page:
+        pages.append(current_page)
+    
+    # Get requested page (default to empty if page doesn't exist)
+    if page > len(pages):
+        paginated_results = []
+        page_size = 0
+    else:
+        paginated_results = pages[page - 1]
+        page_size = len(paginated_results)
+    
+    has_more = page < len(pages)
+    
+    logger.info(f"Pagination: {len(pages)} pages total, page {page} has {page_size} results")
     
     return SearchResponse(
         query=full_response.query,
         results=paginated_results,
         count=len(paginated_results),
-        total=total,
+        total=total_results,
         page=page,
         page_size=page_size,
         has_more=has_more

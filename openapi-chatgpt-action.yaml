@@ -12,14 +12,14 @@ info:
     - Semantic search using vector embeddings
     - Automatic chunk merging from same documents
     - Result deduplication
-    - Pagination support (default 20 results per page)
+    - Smart pagination (max 100,000 characters per response)
     - Redis caching for improved performance (instant page navigation)
     
     **Usage Notes:**
     - Both `qhu` (Hungarian) and `qen` (English) parameters are required
     - Results automatically deduplicated and sorted by relevance score
     - Short proxy URLs provided for file downloads
-    - Use `page` and `page_size` parameters for pagination
+    - Pages automatically calculated to fit 100,000 character limit
     - After first request, all pages are cached for instant access
 
 servers:
@@ -36,9 +36,10 @@ paths:
         deduplicated document results. Results are paginated for optimal performance.
         
         **Pagination:**
-        - Default: 20 results per page
-        - Use `page` parameter to navigate through results
+        - Automatic pagination based on 100,000 character limit per response
+        - Use `page` parameter to navigate through results (1-indexed)
         - Check `has_more` field to see if more pages exist
+        - Page size varies dynamically based on content size
         - All pages are cached after first request (instant subsequent access)
         
       parameters:
@@ -70,24 +71,13 @@ paths:
           in: query
           required: false
           description: >
-            Page number for pagination (1-indexed). Default is 1.
+            Page number for pagination (1-indexed). Default is 1. Pages are automatically
+            calculated to fit within 100,000 character limit per response.
           schema:
             type: integer
             minimum: 1
             default: 1
             example: 1
-        
-        - name: page_size
-          in: query
-          required: false
-          description: >
-            Number of results per page (1-50). Default is 20.
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 50
-            default: 20
-            example: 20
 
       responses:
         '200':
@@ -98,13 +88,13 @@ paths:
                 $ref: '#/components/schemas/SearchResponse'
               examples:
                 bilingual_search:
-                  summary: Bilingual search with merged and paginated results
+                  summary: Bilingual search with smart pagination (100k char limit)
                   value:
                     query: "cserkészet | scouting"
-                    count: 20
+                    count: 15
                     total: 64
                     page: 1
-                    page_size: 20
+                    page_size: 15
                     has_more: true
                     results:
                       - score: 0.8957
@@ -158,9 +148,9 @@ components:
           type: integer
           format: int32
           description: >
-            Number of results in current page.
+            Number of results in current page (varies based on content size).
           minimum: 0
-          example: 20
+          example: 15
         
         total:
           type: integer
@@ -182,10 +172,9 @@ components:
           type: integer
           format: int32
           description: >
-            Number of results per page.
-          minimum: 1
-          maximum: 50
-          example: 20
+            Number of results in current page (varies based on content size to stay under 100k character limit).
+          minimum: 0
+          example: 15
         
         has_more:
           type: boolean
