@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 class SearchRequest(BaseModel):
     query: Union[str, List[str]] = Field(..., description="Search query or list of queries")
     rewrite_query: bool = Field(True, description="Whether to rewrite the query for better search results")
+    merge_results: bool = Field(True, description="Apply diversity filter to limit chunks per document")
 
 
 class ContentItem(BaseModel):
@@ -520,12 +521,9 @@ async def search(request: SearchRequest):
             for item in raw_results.get('data', []):
                 # Extract SHA256 from filename
                 filename = item.get('filename', '')
-                logger.info(f"Processing result with filename: {filename}")
-                
                 sha256_hash = filename.replace('.txt', '') if filename.endswith('.txt') else None
                 
                 if not sha256_hash:
-                    logger.warning(f"Skipping result - filename doesn't end with .txt: {filename}")
                     continue
                 
                 # Get metadata from database with short proxy URLs
@@ -549,6 +547,26 @@ async def search(request: SearchRequest):
         
         # Sort all results by score (highest first)
         all_results.sort(key=lambda x: x.score, reverse=True)
+        
+        # Apply diversity filter: limit chunks per document to improve variety
+        if request.merge_results:
+            seen_docs = {}
+            diverse_results = []
+            max_chunks_per_doc = 3  # Maximum chunks from same document
+            
+            for result in all_results:
+                if result.metadata:
+                    doc_id = result.metadata.sha256
+                    count = seen_docs.get(doc_id, 0)
+                    
+                    if count < max_chunks_per_doc:
+                        diverse_results.append(result)
+                        seen_docs[doc_id] = count + 1
+                else:
+                    diverse_results.append(result)
+            
+            all_results = diverse_results
+            logger.info(f"Applied diversity filter: {len(all_results)} results after limiting chunks per document")
         
         # Build query string for response
         query_string = " | ".join(queries) if len(queries) > 1 else queries[0]
@@ -595,7 +613,8 @@ async def search_get(
     # Both queries required
     request = SearchRequest(
         query=[qhu, qen],
-        rewrite_query=True
+        rewrite_query=True,
+        merge_results=True  # Enable diversity filter
     )
     
     # Get full results

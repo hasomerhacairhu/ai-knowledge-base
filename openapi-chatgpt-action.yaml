@@ -3,28 +3,21 @@ info:
   title: AI Knowledge Base Search API
   version: 2.0.0
   description: >
-    Semantic search API for searching through a knowledge base of educational materials 
-    in both Hungarian and English. Uses OpenAI's vector store for semantic similarity search.
-    
-    **Features:**
-    - Bilingual search (Hungarian + English required)
-    - Automatic pagination (max 100,000 characters per response)
-    - Instant page navigation via Redis caching
-    - Short proxy URLs for file downloads
+    Semantic search API for searching through a knowledge base of educational materials  in both Hungarian and English.
+    Uses OpenAI's vector store for semantic similarity search.
 
+    **Features:** - Bilingual search (Hungarian + English required) - Automatic pagination (max 100,000 characters per response) - Instant page navigation via Redis caching - Short proxy URLs for file downloads
 servers:
   - url: https://api.z10n.dev
     description: Production API server
-
 paths:
   /api/search:
     get:
       operationId: searchKnowledgeBase
       summary: Search the knowledge base with bilingual queries
       description: >
-        Performs semantic search using both Hungarian and English queries. Results are 
-        automatically paginated to stay under 100,000 character limit per response.
-        
+        Performs semantic search using both Hungarian and English queries. Results are  automatically paginated to stay
+        under 100,000 character limit per response.
       parameters:
         - name: qhu
           in: query
@@ -34,8 +27,7 @@ paths:
             type: string
             minLength: 2
             maxLength: 500
-            example: "cserkészet és vezetés"
-
+            example: cserkészet és vezetés
         - name: qen
           in: query
           required: true
@@ -44,8 +36,7 @@ paths:
             type: string
             minLength: 2
             maxLength: 500
-            example: "scouting and leadership"
-        
+            example: scouting and leadership
         - name: page
           in: query
           required: false
@@ -55,19 +46,18 @@ paths:
             minimum: 1
             default: 1
             example: 1
-
       responses:
-        '200':
+        "200":
           description: Successful search with results
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SearchResponse'
+                $ref: "#/components/schemas/SearchResponse"
               examples:
                 search_example:
                   summary: Bilingual search with pagination
                   value:
-                    query: "cserkészet | scouting"
+                    query: cserkészet | scouting
                     count: 12
                     total: 45
                     page: 1
@@ -76,15 +66,14 @@ paths:
                     results:
                       - score: 0.8957
                         content:
-                          - type: "text"
-                            text: "Scout advancement is something very special..."
+                          - type: text
+                            text: Scout advancement is something very special...
                         metadata:
-                          original_name: "Boy_Scouts_handbook.pdf"
-                          sha256: "abc123..."
-                          original_file_url: "https://api.z10n.dev/api/file/abc123..."
-                          processed_text_url: "https://api.z10n.dev/api/text/abc123..."
-
-        '400':
+                          original_name: Boy_Scouts_handbook.pdf
+                          sha256: abc123...
+                          original_file_url: https://api.z10n.dev/api/file/abc123...
+                          processed_text_url: https://api.z10n.dev/api/text/abc123...
+        "400":
           description: Bad request - missing required parameters
           content:
             application/json:
@@ -93,8 +82,7 @@ paths:
                 properties:
                   detail:
                     type: string
-                    example: "Both qhu and qen parameters are required"
-
+                    example: Both qhu and qen parameters are required
 components:
   schemas:
     SearchResponse:
@@ -107,43 +95,36 @@ components:
         query:
           type: string
           description: Combined query string (Hungarian | English)
-          example: "vezetés | leadership"
-
+          example: vezetés | leadership
         count:
           type: integer
           description: Number of results in current page
           minimum: 0
           example: 12
-        
         total:
           type: integer
           description: Total number of results across all pages
           minimum: 0
           example: 45
-        
         page:
           type: integer
           description: Current page number (1-indexed)
           minimum: 1
           example: 1
-        
         page_size:
           type: integer
           description: Number of results in current page (varies by content size)
           minimum: 0
           example: 12
-        
         has_more:
           type: boolean
           description: Whether more pages are available
           example: true
-
         results:
           type: array
           description: Search results sorted by relevance score
           items:
-            $ref: '#/components/schemas/SearchResult'
-
+            $ref: "#/components/schemas/SearchResult"
     SearchResult:
       type: object
       required:
@@ -153,19 +134,16 @@ components:
         score:
           type: number
           description: Relevance score (0.0-1.0, higher is better)
-          minimum: 0.0
-          maximum: 1.0
+          minimum: 0
+          maximum: 1
           example: 0.8957
-
         content:
           type: array
           description: Text chunks from the document
           items:
-            $ref: '#/components/schemas/ContentItem'
-
+            $ref: "#/components/schemas/ContentItem"
         metadata:
-          $ref: '#/components/schemas/FileMetadata'
-
+          $ref: "#/components/schemas/FileMetadata"
     ContentItem:
       type: object
       required:
@@ -174,14 +152,13 @@ components:
       properties:
         type:
           type: string
-          enum: ["text"]
-          example: "text"
-
+          enum:
+            - text
+          example: text
         text:
           type: string
           description: Extracted text content from document
-          example: "Scout advancement is something very special..."
-
+          example: Scout advancement is something very special...
     FileMetadata:
       type: object
       required:
@@ -191,23 +168,20 @@ components:
         original_name:
           type: string
           description: Original filename
-          example: "Boy_Scouts_handbook.pdf"
-
+          example: Boy_Scouts_handbook.pdf
         sha256:
           type: string
           description: SHA256 hash of the file
-          pattern: '^[a-f0-9]{64}$'
-          example: "abc123def4567890..."
-
+          pattern: ^[a-f0-9]{64}$
+          example: abc123def4567890...
         original_file_url:
           type: string
           format: uri
           description: URL to download original file
-          example: "https://api.z10n.dev/api/file/abc123..."
-        
+          example: https://api.z10n.dev/api/file/abc123...
         processed_text_url:
           type: string
           format: uri
           description: URL to download processed text
           nullable: true
-          example: "https://api.z10n.dev/api/text/abc123..."
+          example: https://api.z10n.dev/api/text/abc123...
