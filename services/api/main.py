@@ -40,6 +40,8 @@ class SearchRequest(BaseModel):
     query: Union[str, List[str]] = Field(..., description="Search query or list of queries")
     rewrite_query: bool = Field(True, description="Whether to rewrite the query for better search results")
     merge_results: bool = Field(True, description="Apply diversity filter to limit chunks per document")
+    use_hybrid_search: bool = Field(True, description="Enable hybrid search (vector + keyword matching)")
+    score_threshold: float = Field(0.0, ge=0.0, le=1.0, description="Minimum relevance score (0.0-1.0)")
 
 
 class ContentItem(BaseModel):
@@ -361,7 +363,9 @@ def set_cached_results(cache_key: str, results: Dict[str, Any], ttl: int = None)
 async def vector_store_search(
     query: str,
     max_num_results: int = 10,
-    rewrite_query: bool = True
+    rewrite_query: bool = True,
+    use_hybrid_search: bool = True,
+    score_threshold: float = 0.0
 ) -> Dict[str, Any]:
     """
     Direct search of vector store with caching.
@@ -370,6 +374,8 @@ async def vector_store_search(
         query: Search query
         max_num_results: Number of results to return (1-50)
         rewrite_query: Whether to optimize query for vector search
+        use_hybrid_search: Enable hybrid search (vector + keyword)
+        score_threshold: Minimum relevance score (0.0-1.0)
         
     Returns:
         Search results with relevant document chunks
@@ -389,6 +395,24 @@ async def vector_store_search(
         "max_num_results": max_num_results,
         "rewrite_query": rewrite_query
     }
+    
+    # Add ranking options for better relevance
+    if use_hybrid_search or score_threshold > 0.0:
+        ranking_options = {
+            "ranker": "auto"  # Use latest ranker
+        }
+        
+        if score_threshold > 0.0:
+            ranking_options["score_threshold"] = score_threshold
+        
+        if use_hybrid_search:
+            ranking_options["hybrid_search"] = {
+                "embedding_weight": 0.7,  # 70% semantic similarity
+                "text_weight": 0.3        # 30% keyword matching
+            }
+        
+        payload["ranking_options"] = ranking_options
+        logger.info(f"Using hybrid search with score_threshold={score_threshold}")
     
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(endpoint, headers=openai_headers, json=payload)
@@ -514,7 +538,9 @@ async def search(request: SearchRequest):
             raw_results = await vector_store_search(
                 query=query_text,
                 max_num_results=50,
-                rewrite_query=request.rewrite_query
+                rewrite_query=request.rewrite_query,
+                use_hybrid_search=request.use_hybrid_search,
+                score_threshold=request.score_threshold
             )
             
             # Enrich results with metadata
@@ -614,7 +640,9 @@ async def search_get(
     request = SearchRequest(
         query=[qhu, qen],
         rewrite_query=True,
-        merge_results=True  # Enable diversity filter
+        merge_results=True,  # Enable diversity filter
+        use_hybrid_search=True,  # Enable hybrid search (vector + keyword)
+        score_threshold=0.3  # Filter low-relevance results
     )
     
     # Get full results
