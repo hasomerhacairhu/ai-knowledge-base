@@ -640,7 +640,7 @@ async def search_get(
     full_response = await search(request)
     
     # Apply pagination based on 100k character limit
-    max_chars = 90000  # Safety margin for JSON formatting
+    max_chars = 80000  # Safety margin for JSON formatting
     total_results = len(full_response.results)
     
     # Build pages dynamically by measuring actual response size
