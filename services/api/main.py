@@ -662,46 +662,36 @@ async def search_get(
     full_response = await search(request)
     
     # Apply pagination based on 100k character limit
-    max_chars = 100000
+    max_chars = 90000  # Safety margin for JSON formatting
     total_results = len(full_response.results)
     
-    # Build pages dynamically by character count
+    # Build pages dynamically by measuring actual response size
     pages = []
     current_page = []
     
-    # Build a test response to calculate exact overhead
-    test_response = SearchResponse(
-        query=full_response.query,
-        count=0,
-        total=total_results,
-        page=1,
-        page_size=0,
-        has_more=False,
-        results=[]
-    )
-    base_overhead = len(test_response.model_dump_json())
-    
-    current_chars = base_overhead
-    
     for result in full_response.results:
-        # Calculate size of this result when serialized
-        result_json = result.model_dump_json()
-        result_chars = len(result_json)
+        # Try adding this result
+        test_page = current_page + [result]
         
-        # Add comma separator if not first result (JSON array formatting)
-        separator_chars = 1 if current_page else 0
+        # Build test response to measure actual size
+        test_response = SearchResponse(
+            query=full_response.query,
+            results=test_page,
+            count=len(test_page),
+            total=total_results,
+            page=1,
+            page_size=len(test_page),
+            has_more=True
+        )
         
-        # Check if adding this result would exceed limit
-        potential_total = current_chars + result_chars + separator_chars
+        response_size = len(test_response.model_dump_json())
         
-        if potential_total > max_chars and current_page:
-            # Save current page and start new one
+        # If adding this result exceeds limit and we have results, start new page
+        if response_size > max_chars and current_page:
             pages.append(current_page)
             current_page = [result]
-            current_chars = base_overhead + result_chars
         else:
-            current_page.append(result)
-            current_chars = potential_total
+            current_page = test_page
     
     # Add last page if not empty
     if current_page:
