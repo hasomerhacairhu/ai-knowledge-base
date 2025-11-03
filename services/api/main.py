@@ -571,7 +571,11 @@ async def get_context(
     # Download the full processed text from S3
     try:
         s3_bucket = os.getenv("S3_BUCKET")
-        text_key = s3_key.replace('.txt', '_processed.txt') if not s3_key.endswith('_processed.txt') else s3_key
+        
+        # Text files are stored as: derivatives/{shard1}/{shard2}/{sha256}/text.txt
+        shard1 = sha256[:2]
+        shard2 = sha256[2:4]
+        text_key = f"derivatives/{shard1}/{shard2}/{sha256}/text.txt"
         
         logger.info(f"Downloading text from S3: {text_key}")
         response = s3_client.get_object(Bucket=s3_bucket, Key=text_key)
