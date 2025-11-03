@@ -7,9 +7,12 @@ FastAPI service for semantic search over the vector store
 import os
 import sys
 import logging
+import json
+import hashlib
 import psycopg2
 from psycopg2 import pool
 import boto3
+import redis
 from typing import Dict, List, Optional, Any, Union
 from contextlib import asynccontextmanager
 
@@ -67,12 +70,13 @@ s3_client = None
 openai_headers = None
 vector_store_id = None
 db_pool = None
+redis_client = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize clients on startup"""
-    global s3_client, openai_headers, vector_store_id, db_pool
+    global s3_client, openai_headers, vector_store_id, db_pool, redis_client
     
     # Initialize S3 client
     s3_region = os.getenv("S3_REGION", "us-east-1")
@@ -121,6 +125,23 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ Failed to initialize PostgreSQL connection pool: {e}")
         raise ValueError(f"Failed to initialize PostgreSQL connection pool: {e}")
     
+    # Initialize Redis client
+    try:
+        redis_client = redis.Redis(
+            host=os.getenv("REDIS_HOST", "redis"),
+            port=int(os.getenv("REDIS_PORT", "6379")),
+            db=0,
+            decode_responses=True,
+            socket_connect_timeout=5,
+            socket_timeout=5
+        )
+        # Test connection
+        redis_client.ping()
+        logger.info("✅ Redis cache initialized")
+    except Exception as e:
+        logger.warning(f"⚠️  Redis not available, caching disabled: {e}")
+        redis_client = None
+    
     logger.info("✅ API service initialized")
     yield
     
@@ -128,6 +149,9 @@ async def lifespan(app: FastAPI):
     if db_pool:
         db_pool.closeall()
         logger.info("🛑 PostgreSQL connection pool closed")
+    if redis_client:
+        redis_client.close()
+        logger.info("🛑 Redis connection closed")
     logger.info("🛑 API service shutting down")
 
 
@@ -231,13 +255,81 @@ def get_file_metadata(sha256_hash: str) -> Optional[FileMetadata]:
             db_pool.putconn(conn)
 
 
+def get_cache_key(query: str, max_num_results: int, rewrite_query: bool) -> str:
+    """
+    Generate cache key for search query
+    
+    Args:
+        query: Search query
+        max_num_results: Number of results
+        rewrite_query: Query rewrite flag
+        
+    Returns:
+        Cache key string
+    """
+    # Create deterministic key from query parameters
+    params = f"{query}|{max_num_results}|{rewrite_query}"
+    key_hash = hashlib.sha256(params.encode()).hexdigest()[:16]
+    return f"search:{key_hash}"
+
+
+def get_cached_results(cache_key: str) -> Optional[Dict[str, Any]]:
+    """
+    Get cached search results from Redis
+    
+    Args:
+        cache_key: Cache key
+        
+    Returns:
+        Cached results or None
+    """
+    if not redis_client:
+        return None
+    
+    try:
+        cached = redis_client.get(cache_key)
+        if cached:
+            logger.info(f"✓ Cache HIT: {cache_key}")
+            return json.loads(cached)
+    except Exception as e:
+        logger.warning(f"Cache read error: {e}")
+    
+    return None
+
+
+def set_cached_results(cache_key: str, results: Dict[str, Any], ttl: int = None):
+    """
+    Store search results in Redis cache
+    
+    Args:
+        cache_key: Cache key
+        results: Search results to cache
+        ttl: Time to live in seconds (default from env)
+    """
+    if not redis_client:
+        return
+    
+    try:
+        if ttl is None:
+            ttl = int(os.getenv("CACHE_TTL", "3600"))  # Default 1 hour
+        
+        redis_client.setex(
+            cache_key,
+            ttl,
+            json.dumps(results)
+        )
+        logger.info(f"✓ Cached: {cache_key} (TTL: {ttl}s)")
+    except Exception as e:
+        logger.warning(f"Cache write error: {e}")
+
+
 async def vector_store_search(
     query: str,
     max_num_results: int = 10,
     rewrite_query: bool = True
 ) -> Dict[str, Any]:
     """
-    Direct search of vector store without LLM generation.
+    Direct search of vector store with caching.
     
     Args:
         query: Search query
@@ -247,6 +339,14 @@ async def vector_store_search(
     Returns:
         Search results with relevant document chunks
     """
+    # Check cache first
+    cache_key = get_cache_key(query, max_num_results, rewrite_query)
+    cached_results = get_cached_results(cache_key)
+    if cached_results:
+        return cached_results
+    
+    # Cache miss - call OpenAI API
+    logger.info(f"✗ Cache MISS: {cache_key} - calling OpenAI API")
     endpoint = f"https://api.openai.com/v1/vector_stores/{vector_store_id}/search"
     
     payload = {
@@ -258,7 +358,12 @@ async def vector_store_search(
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(endpoint, headers=openai_headers, json=payload)
         response.raise_for_status()
-        return response.json()
+        results = response.json()
+        
+        # Cache the results
+        set_cached_results(cache_key, results)
+        
+        return results
 
 
 @app.get("/")
@@ -288,10 +393,19 @@ async def health_check():
     except Exception as e:
         db_status = f"error: {str(e)}"
     
+    cache_status = "disabled"
+    if redis_client:
+        try:
+            redis_client.ping()
+            cache_status = "connected"
+        except Exception as e:
+            cache_status = f"error: {str(e)}"
+    
     return {
         "status": "healthy" if db_status == "connected" else "degraded",
         "vector_store_id": vector_store_id,
-        "database": db_status
+        "database": db_status,
+        "cache": cache_status
     }
 
 
