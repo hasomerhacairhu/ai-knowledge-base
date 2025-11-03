@@ -611,51 +611,29 @@ async def search(request: SearchRequest):
 
 @app.get("/api/search", response_model=SearchResponse)
 async def search_get(
-    qhu: Optional[str] = Query(None, description="Hungarian search query"),
-    qen: Optional[str] = Query(None, description="English search query"),
-    qen2: Optional[str] = Query(None, description="Additional English search query 2"),
-    qen3: Optional[str] = Query(None, description="Additional English search query 3"),
-    rewrite: bool = Query(True, description="Rewrite query for search"),
-    merge_results: bool = Query(True, description="Merge and deduplicate results"),
+    qhu: str = Query(..., description="Hungarian search query (required)"),
+    qen: str = Query(..., description="English search query (required)"),
     page: int = Query(1, ge=1, description="Page number (1-indexed)")
 ):
     """
-    GET endpoint for search with automatic pagination based on 100k character limit
+    GET endpoint for bilingual search with automatic pagination based on 100k character limit
     
     Args:
-        qhu: Hungarian search query (optional)
-        qen: English search query (optional)
-        qen2, qen3: Additional English search queries (optional)
-        rewrite: Whether to rewrite the query
-        merge_results: Merge and deduplicate results from multiple queries
+        qhu: Hungarian search query (required)
+        qen: English search query (required)
         page: Page number (1-indexed)
         
     Returns:
         SearchResponse with paginated results (max 100,000 characters per page)
         
     Examples:
-        /api/search?qen=Holocaust education&page=1
-        /api/search?qen=Holocaust education&qhu=Holokauszt oktatás&page=2
+        /api/search?qhu=Holokauszt oktatás&qen=Holocaust education&page=1
     """
-    # Collect all non-None queries
-    queries = []
-    if qhu:
-        queries.append(qhu)
-    if qen:
-        queries.append(qen)
-    if qen2:
-        queries.append(qen2)
-    if qen3:
-        queries.append(qen3)
-    
-    # Must have at least one query
-    if not queries:
-        raise HTTPException(status_code=400, detail="At least one query parameter (qhu, qen) is required")
-    
+    # Both queries required
     request = SearchRequest(
-        query=queries if len(queries) > 1 else queries[0],
-        merge_results=merge_results,
-        rewrite_query=rewrite
+        query=[qhu, qen],
+        merge_results=True,
+        rewrite_query=True
     )
     
     # Get full results
