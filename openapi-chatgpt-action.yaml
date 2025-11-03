@@ -16,14 +16,8 @@ paths:
       operationId: searchKnowledgeBase
       summary: Search the knowledge base with bilingual queries
       description: >
-        Performs semantic search using both Hungarian and English queries. Results are  automatically paginated to stay
-        under 100,000 character limit per response.
-        
-        **Hybrid Search:** Combines semantic (vector) and keyword (text) search using configurable weights.
-        Adjust `embedding_weight` and `text_weight` to optimize for different query types:
-        - Conceptual queries (e.g., "leadership principles"): Use higher embedding_weight (0.8-0.9)
-        - Specific terms (e.g., "Peter Novak", "Holocaust"): Use higher text_weight (0.5-0.7)
-        - Balanced queries: Use defaults (0.7/0.3)
+        Performs semantic search using Hungarian and English queries with automatic pagination (max 100k chars/page).
+        Uses hybrid search (semantic + keyword) with configurable weights for optimal relevance.
       parameters:
         - name: qhu
           in: query
@@ -55,9 +49,7 @@ paths:
         - name: embedding_weight
           in: query
           required: false
-          description: >
-            Weight for semantic similarity in hybrid search (0.0-1.0). Higher values favor conceptual/semantic matching.
-            Default: 0.7 for balanced search. Use 0.9 for conceptual queries, 0.5 for exact term matching.
+          description: Weight for semantic similarity (0.0-1.0). Higher=conceptual. Default 0.7, use 0.9 for concepts, 0.5 for exact terms.
           schema:
             type: number
             minimum: 0.0
@@ -67,9 +59,7 @@ paths:
         - name: text_weight
           in: query
           required: false
-          description: >
-            Weight for keyword matching in hybrid search (0.0-1.0). Higher values favor exact term/phrase matches.
-            Default: 0.3 for balanced search. Use 0.5-0.7 for specific names or technical terms.
+          description: Weight for keyword matching (0.0-1.0). Higher=exact terms. Default 0.3, use 0.5-0.7 for names/technical terms.
           schema:
             type: number
             minimum: 0.0
