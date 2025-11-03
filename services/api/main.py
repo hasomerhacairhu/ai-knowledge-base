@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 import httpx
 from botocore.config import Config
@@ -48,8 +49,8 @@ class ContentItem(BaseModel):
 
 class FileMetadata(BaseModel):
     original_name: str
-    original_file_download_url: str
-    processed_text_download_url: Optional[str] = None
+    original_file_url: str
+    processed_text_url: Optional[str] = None
     sha256: str
 
 
@@ -174,15 +175,16 @@ app.add_middleware(
 )
 
 
-def get_file_metadata(sha256_hash: str) -> Optional[FileMetadata]:
+def get_file_metadata(sha256_hash: str, base_url: str) -> Optional[FileMetadata]:
     """
     Look up file metadata from PostgreSQL database by SHA256 hash.
     
     Args:
         sha256_hash: SHA256 hash extracted from OpenAI filename
+        base_url: Base URL for file proxies
         
     Returns:
-        FileMetadata object or None
+        FileMetadata object or None with short proxy URLs
     """
     conn = None
     try:
@@ -205,43 +207,14 @@ def get_file_metadata(sha256_hash: str) -> Optional[FileMetadata]:
         if result:
             original_name, s3_key, sha256 = result
             
-            # Generate S3 presigned URLs (7 days)
-            original_file_download_url = None
-            processed_text_download_url = None
-            
-            if s3_key:
-                try:
-                    # Original file download URL (7 days = 604800 seconds)
-                    original_file_download_url = s3_client.generate_presigned_url(
-                        'get_object',
-                        Params={
-                            'Bucket': os.getenv("S3_BUCKET"),
-                            'Key': s3_key
-                        },
-                        ExpiresIn=604800
-                    )
-                    
-                    # Processed text file download URL (7 days)
-                    # Text files are stored as: derivatives/{shard1}/{shard2}/{sha256}/text.txt
-                    shard1 = sha256[:2]
-                    shard2 = sha256[2:4]
-                    txt_key = f"derivatives/{shard1}/{shard2}/{sha256}/text.txt"
-                    processed_text_download_url = s3_client.generate_presigned_url(
-                        'get_object',
-                        Params={
-                            'Bucket': os.getenv("S3_BUCKET"),
-                            'Key': txt_key
-                        },
-                        ExpiresIn=604800
-                    )
-                        
-                except Exception as e:
-                    logger.error(f"⚠️  Could not generate S3 URL for {sha256_hash}: {e}")
+            # Generate short proxy URLs instead of presigned S3 URLs
+            original_file_url = f"{base_url}/file/{sha256}"
+            processed_text_url = f"{base_url}/text/{sha256}"
             
             return FileMetadata(
                 original_name=original_name,
-                original_file_download_url=original_file_download_url or "",
-                processed_text_download_url=processed_text_download_url,
+                original_file_url=original_file_url,
+                processed_text_url=processed_text_url,
                 sha256=sha256
             )
         
@@ -249,6 +222,58 @@ def get_file_metadata(sha256_hash: str) -> Optional[FileMetadata]:
         
     except Exception as e:
         logger.error(f"⚠️  Database error for sha256 {sha256_hash}: {e}")
+        return None
+    finally:
+        if conn:
+            db_pool.putconn(conn)
+
+
+def generate_presigned_url(sha256: str, file_type: str = "original") -> Optional[str]:
+    """
+    Generate presigned S3 URL for file download
+    
+    Args:
+        sha256: File SHA256 hash
+        file_type: "original" or "text"
+        
+    Returns:
+        Presigned URL or None
+    """
+    conn = None
+    try:
+        conn = db_pool.getconn()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT s3_key FROM file_state WHERE sha256 = %s LIMIT 1
+        ''', (sha256,))
+        
+        result = cursor.fetchone()
+        
+        if result:
+            s3_key = result[0]
+            
+            if file_type == "text":
+                # Text files are stored as: derivatives/{shard1}/{shard2}/{sha256}/text.txt
+                shard1 = sha256[:2]
+                shard2 = sha256[2:4]
+                s3_key = f"derivatives/{shard1}/{shard2}/{sha256}/text.txt"
+            
+            # Generate presigned URL (7 days = 604800 seconds)
+            url = s3_client.generate_presigned_url(
+                'get_object',
+                Params={
+                    'Bucket': os.getenv("S3_BUCKET"),
+                    'Key': s3_key
+                },
+                ExpiresIn=604800
+            )
+            return url
+        
+        return None
+        
+    except Exception as e:
+        logger.error(f"⚠️  Error generating presigned URL for {sha256}: {e}")
         return None
     finally:
         if conn:
@@ -409,6 +434,40 @@ async def health_check():
     }
 
 
+@app.get("/file/{sha256}")
+async def download_file(sha256: str):
+    """
+    Proxy endpoint for downloading original files
+    
+    Args:
+        sha256: File SHA256 hash
+        
+    Returns:
+        Redirect to presigned S3 URL
+    """
+    url = generate_presigned_url(sha256, file_type="original")
+    if not url:
+        raise HTTPException(status_code=404, detail="File not found")
+    return RedirectResponse(url=url)
+
+
+@app.get("/text/{sha256}")
+async def download_text(sha256: str):
+    """
+    Proxy endpoint for downloading processed text files
+    
+    Args:
+        sha256: File SHA256 hash
+        
+    Returns:
+        Redirect to presigned S3 URL
+    """
+    url = generate_presigned_url(sha256, file_type="text")
+    if not url:
+        raise HTTPException(status_code=404, detail="Text file not found")
+    return RedirectResponse(url=url)
+
+
 @app.post("/api/search", response_model=SearchResponse)
 async def search(request: SearchRequest):
     """
@@ -418,9 +477,12 @@ async def search(request: SearchRequest):
         request: SearchRequest with query and parameters
         
     Returns:
-        SearchResponse with enriched results
+        SearchResponse with enriched results (limited to 100KB)
     """
     try:
+        # Get base URL for file proxies
+        base_url = os.getenv("API_BASE_URL", "https://api.z10n.dev/api")
+        
         # Convert single query to list for uniform processing
         queries = [request.query] if isinstance(request.query, str) else request.query
         
@@ -449,8 +511,8 @@ async def search(request: SearchRequest):
                 if not sha256_hash:
                     continue
                 
-                # Get metadata from database
-                metadata = get_file_metadata(sha256_hash)
+                # Get metadata from database with short proxy URLs
+                metadata = get_file_metadata(sha256_hash, base_url)
                 
                 # Build content list for this chunk
                 content = []
@@ -512,13 +574,41 @@ async def search(request: SearchRequest):
         # Build query string for response
         query_string = " | ".join(queries) if len(queries) > 1 else queries[0]
         
-        logger.info(f"Search completed: {len(all_results)} results found from {len(queries)} queries")
+        # Trim results to fit within 100KB limit
+        max_size_bytes = 100 * 1024  # 100KB
+        trimmed_results = []
         
-        return SearchResponse(
+        for result in all_results:
+            # Build test response with current results + new result
+            test_response = SearchResponse(
+                query=query_string,
+                results=trimmed_results + [result],
+                count=len(trimmed_results) + 1
+            )
+            
+            # Check size
+            response_json = test_response.model_dump_json()
+            size_bytes = len(response_json.encode('utf-8'))
+            
+            if size_bytes > max_size_bytes:
+                logger.warning(f"Response size limit reached: {size_bytes} bytes > {max_size_bytes} bytes. Returning {len(trimmed_results)} results.")
+                break
+            
+            trimmed_results.append(result)
+        
+        logger.info(f"Search completed: {len(trimmed_results)} results returned (original: {len(all_results)})")
+        
+        final_response = SearchResponse(
             query=query_string,
-            results=all_results,
-            count=len(all_results)
+            results=trimmed_results,
+            count=len(trimmed_results)
         )
+        
+        # Log final size
+        final_size = len(final_response.model_dump_json().encode('utf-8'))
+        logger.info(f"Final response size: {final_size / 1024:.2f} KB")
+        
+        return final_response
         
     except httpx.HTTPStatusError as e:
         logger.error(f"OpenAI API error: {e.response.status_code} - {e.response.text}")

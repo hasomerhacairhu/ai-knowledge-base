@@ -1,0 +1,222 @@
+openapi: 3.1.0
+info:
+  title: AI Knowledge Base Search API
+  version: 2.0.0
+  description: >
+    Semantic search API for searching through a knowledge base of educational materials, 
+    documents, and resources in both Hungarian and English. The API uses OpenAI's vector 
+    store for semantic similarity search and returns relevant document chunks with metadata.
+    
+    **Key Features:**
+    - Bilingual search (Hungarian and English required)
+    - Semantic search using vector embeddings
+    - Automatic chunk merging from same documents
+    - Result deduplication
+    - Redis caching for improved performance
+    - Response size limited to 100KB for optimal performance
+    
+    **Usage Notes:**
+    - Both `qhu` (Hungarian) and `qen` (English) parameters are required
+    - Results automatically deduplicated and sorted by relevance score
+    - Short proxy URLs provided for file downloads
+
+servers:
+  - url: https://api.z10n.dev
+    description: Production API server
+
+paths:
+  /api/search:
+    get:
+      operationId: searchKnowledgeBase
+      summary: Search the knowledge base for relevant documents in Hungarian and English
+      description: Performs semantic bilingual search using `qhu` and `qen` to retrieve merged and deduplicated document results.
+      parameters:
+        - name: qhu
+          in: query
+          required: true
+          description: >
+            Hungarian language search query (REQUIRED). Use natural language phrases describing 
+            what you're looking for. Example: "vezetési módszerek" or "Holokauszt oktatás".
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 500
+            example: "cserkészet és vezetés"
+
+        - name: qen
+          in: query
+          required: true
+          description: >
+            English language search query (REQUIRED). Use natural language phrases describing 
+            what you're looking for. Example: "leadership methods" or "Holocaust education".
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 500
+            example: "scouting and leadership"
+
+      responses:
+        '200':
+          description: Successful search with results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+              examples:
+                bilingual_search:
+                  summary: Bilingual search with merged results
+                  value:
+                    query: "cserkészet | scouting"
+                    count: 64
+                    results:
+                      - score: 0.8957
+                        content:
+                          - type: "text"
+                            text: "Scout advancement is something very special. In most other kinds of learning..."
+                        metadata:
+                          original_name: "Boy_Scouts_handbook.pdf"
+                          sha256: "abc123def456..."
+                          original_file_url: "https://api.z10n.dev/api/file/abc123def456..."
+                          processed_text_url: "https://api.z10n.dev/api/text/abc123def456..."
+
+        '400':
+          description: Bad request - missing required parameters or invalid parameters
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                    example: "Both qhu and qen parameters are required"
+
+        '500':
+          description: Internal server error - search service failure
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                    example: "Internal search error"
+
+components:
+  schemas:
+    SearchResponse:
+      type: object
+      required:
+        - query
+        - results
+        - count
+      properties:
+        query:
+          type: string
+          description: >
+            Combined query string showing all queries used. Multiple queries are joined with " | ".
+          example: "vezetés | leadership | organizational culture"
+
+        count:
+          type: integer
+          format: int32
+          description: >
+            Total number of unique documents returned after deduplication and merging.
+          minimum: 0
+          example: 42
+
+        results:
+          type: array
+          description: >
+            Array of search results, sorted by relevance score (highest first). Each result contains 
+            content chunks and metadata about the source document.
+          items:
+            $ref: '#/components/schemas/SearchResult'
+
+    SearchResult:
+      type: object
+      required:
+        - score
+        - content
+      properties:
+        score:
+          type: number
+          format: float
+          description: >
+            Relevance score from 0.0 to 1.0, where 1.0 is perfect match. Scores above 0.7 indicate 
+            highly relevant results. When chunks are merged, the highest score is kept.
+          minimum: 0.0
+          maximum: 1.0
+          example: 0.8957
+
+        content:
+          type: array
+          description: >
+            Array of content chunks from the document. Multiple relevant chunks from the same 
+            document are automatically combined here. Each chunk contains extracted text from 
+            the document.
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ContentItem'
+
+        metadata:
+          $ref: '#/components/schemas/FileMetadata'
+
+    ContentItem:
+      type: object
+      required:
+        - type
+        - text
+      properties:
+        type:
+          type: string
+          description: Content type identifier
+          enum:
+            - text
+          example: "text"
+
+        text:
+          type: string
+          description: >
+            Extracted text content from the document. This is a chunk of text that was found to be 
+            semantically relevant to the search query. Multiple chunks from the same document may 
+            appear in the content array.
+          minLength: 1
+          maxLength: 10000
+          example: "Scout advancement is something very special. In most other kinds of learning..."
+
+    FileMetadata:
+      type: object
+      required:
+        - original_name
+        - sha256
+      properties:
+        original_name:
+          type: string
+          description: >
+            Original filename of the source document. This is the name of the file as it was 
+            uploaded to the knowledge base.
+          example: "Boy_Scouts_handbook.pdf"
+
+        sha256:
+          type: string
+          description: >
+            SHA256 hash of the file, used as unique identifier. This can be used to identify 
+            duplicate documents or track specific files.
+          pattern: '^[a-f0-9]{64}$'
+          example: "abc123def4567890abc123def4567890abc123def4567890abc123def4567890"
+
+        original_file_url:
+          type: string
+          format: uri
+          description: >
+            Short proxy URL to download the original file. Use this to access the full source document.
+          example: "https://api.z10n.dev/api/file/abc123def456789..."
+        
+        processed_text_url:
+          type: string
+          format: uri
+          description: >
+            Short proxy URL to download the processed text version of the file. This contains the 
+            full extracted text from the document.
+          nullable: true
+          example: "https://api.z10n.dev/api/text/abc123def456789..."
