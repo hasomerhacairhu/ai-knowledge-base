@@ -6,10 +6,10 @@ info:
     Semantic search API for searching through a knowledge base of educational materials  in both Hungarian and English.
     Uses OpenAI's vector store for semantic similarity search.
 
-    **Features:** - Bilingual search (Hungarian + English required) - Automatic pagination (max 100,000 characters per response) - Instant page navigation via Redis caching - Short proxy URLs for file downloads
+    **Features:** - Bilingual search (Hungarian + English required) - Automatic pagination (max 100,000 characters per response) - Instant page navigation via Redis caching - Short proxy URLs for file downloads - Hybrid search (semantic + keyword) with configurable weights
 servers:
   - url: https://api.z10n.dev
-    description: Production API server
+    description: Production API servera
 paths:
   /api/search:
     get:
@@ -18,6 +18,12 @@ paths:
       description: >
         Performs semantic search using both Hungarian and English queries. Results are  automatically paginated to stay
         under 100,000 character limit per response.
+        
+        **Hybrid Search:** Combines semantic (vector) and keyword (text) search using configurable weights.
+        Adjust `embedding_weight` and `text_weight` to optimize for different query types:
+        - Conceptual queries (e.g., "leadership principles"): Use higher embedding_weight (0.8-0.9)
+        - Specific terms (e.g., "Peter Novak", "Holocaust"): Use higher text_weight (0.5-0.7)
+        - Balanced queries: Use defaults (0.7/0.3)
       parameters:
         - name: qhu
           in: query
@@ -46,6 +52,30 @@ paths:
             minimum: 1
             default: 1
             example: 1
+        - name: embedding_weight
+          in: query
+          required: false
+          description: >
+            Weight for semantic similarity in hybrid search (0.0-1.0). Higher values favor conceptual/semantic matching.
+            Default: 0.7 for balanced search. Use 0.9 for conceptual queries, 0.5 for exact term matching.
+          schema:
+            type: number
+            minimum: 0.0
+            maximum: 1.0
+            default: 0.7
+            example: 0.7
+        - name: text_weight
+          in: query
+          required: false
+          description: >
+            Weight for keyword matching in hybrid search (0.0-1.0). Higher values favor exact term/phrase matches.
+            Default: 0.3 for balanced search. Use 0.5-0.7 for specific names or technical terms.
+          schema:
+            type: number
+            minimum: 0.0
+            maximum: 1.0
+            default: 0.3
+            example: 0.3
       responses:
         "200":
           description: Successful search with results
@@ -73,6 +103,34 @@ paths:
                           sha256: abc123...
                           original_file_url: https://api.z10n.dev/api/file/abc123...
                           processed_text_url: https://api.z10n.dev/api/text/abc123...
+                semantic_focused:
+                  summary: Semantic-focused search (conceptual query)
+                  value:
+                    query: vezetési elvek | leadership principles
+                    count: 15
+                    total: 52
+                    page: 1
+                    page_size: 15
+                    has_more: true
+                    results:
+                      - score: 0.9124
+                        content:
+                          - type: text
+                            text: Leadership is not about being in charge...
+                keyword_focused:
+                  summary: Keyword-focused search (specific terms)
+                  value:
+                    query: Holokauszt | Holocaust
+                    count: 18
+                    total: 41
+                    page: 1
+                    page_size: 18
+                    has_more: true
+                    results:
+                      - score: 0.8448
+                        content:
+                          - type: text
+                            text: The Holocaust education program focuses on...
         "400":
           description: Bad request - missing required parameters
           content:
