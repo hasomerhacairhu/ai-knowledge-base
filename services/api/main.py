@@ -668,33 +668,40 @@ async def search_get(
     # Build pages dynamically by character count
     pages = []
     current_page = []
-    current_chars = 0
     
-    # Account for base response structure overhead (query, count, total, etc.)
-    base_overhead = len(json.dumps({
-        "query": full_response.query,
-        "count": 0,
-        "total": total_results,
-        "page": 1,
-        "page_size": 0,
-        "has_more": False,
-        "results": []
-    }))
+    # Build a test response to calculate exact overhead
+    test_response = SearchResponse(
+        query=full_response.query,
+        count=0,
+        total=total_results,
+        page=1,
+        page_size=0,
+        has_more=False,
+        results=[]
+    )
+    base_overhead = len(test_response.model_dump_json())
+    
+    current_chars = base_overhead
     
     for result in full_response.results:
-        # Calculate size of this result
+        # Calculate size of this result when serialized
         result_json = result.model_dump_json()
         result_chars = len(result_json)
         
+        # Add comma separator if not first result (JSON array formatting)
+        separator_chars = 1 if current_page else 0
+        
         # Check if adding this result would exceed limit
-        if current_chars + result_chars + base_overhead > max_chars and current_page:
+        potential_total = current_chars + result_chars + separator_chars
+        
+        if potential_total > max_chars and current_page:
             # Save current page and start new one
             pages.append(current_page)
             current_page = [result]
-            current_chars = result_chars
+            current_chars = base_overhead + result_chars
         else:
             current_page.append(result)
-            current_chars += result_chars
+            current_chars = potential_total
     
     # Add last page if not empty
     if current_page:
