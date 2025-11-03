@@ -315,7 +315,7 @@ async def search(request: SearchRequest):
         logger.info(f"Search request: {len(queries)} queries, max_results={request.max_results}, multilingual={request.multilingual}")
         
         all_results = []
-        seen_sha256 = set()  # Track seen documents for deduplication
+        seen_documents = {}  # Track seen documents: sha256 -> {score, content_chunks, metadata}
         
         # Execute search for each query
         for query_text in queries:
@@ -341,19 +341,13 @@ async def search(request: SearchRequest):
                 filename = item.get('filename', '')
                 sha256_hash = filename.replace('.txt', '') if filename.endswith('.txt') else None
                 
-                # Skip if already seen (deduplication)
-                if request.merge_results and sha256_hash and sha256_hash in seen_sha256:
+                if not sha256_hash:
                     continue
                 
-                if sha256_hash:
-                    seen_sha256.add(sha256_hash)
-                
                 # Get metadata from database
-                metadata = None
-                if sha256_hash:
-                    metadata = get_file_metadata(sha256_hash)
+                metadata = get_file_metadata(sha256_hash)
                 
-                # Build content list
+                # Build content list for this chunk
                 content = []
                 for content_item in item.get('content', []):
                     if content_item.get('type') == 'text':
@@ -362,11 +356,50 @@ async def search(request: SearchRequest):
                             text=content_item.get('text', '')
                         ))
                 
-                all_results.append(SearchResult(
-                    score=item.get('score', 0.0),
-                    content=content,
-                    metadata=metadata
-                ))
+                current_score = item.get('score', 0.0)
+                
+                # Merge chunks from same document
+                if request.merge_results:
+                    if sha256_hash in seen_documents:
+                        # Document already seen - merge chunks and keep highest score
+                        doc_data = seen_documents[sha256_hash]
+                        
+                        # Merge content chunks (avoid duplicate chunks)
+                        existing_texts = {c.text for c in doc_data['content']}
+                        for chunk in content:
+                            if chunk.text not in existing_texts:
+                                doc_data['content'].append(chunk)
+                                logger.info(f"Merged new chunk for document {sha256_hash[:8]}... (total chunks: {len(doc_data['content'])})")
+                        
+                        # Keep highest score
+                        if current_score > doc_data['score']:
+                            doc_data['score'] = current_score
+                            logger.info(f"Updated document {sha256_hash[:8]}... with higher score: {current_score:.4f}")
+                    else:
+                        # First time seeing this document
+                        seen_documents[sha256_hash] = {
+                            'score': current_score,
+                            'content': content,
+                            'metadata': metadata
+                        }
+                else:
+                    # No deduplication - add all results
+                    all_results.append(SearchResult(
+                        score=current_score,
+                        content=content,
+                        metadata=metadata
+                    ))
+        
+        # Convert deduplicated results to list if merge_results was enabled
+        if request.merge_results:
+            all_results = [
+                SearchResult(
+                    score=doc_data['score'],
+                    content=doc_data['content'],
+                    metadata=doc_data['metadata']
+                )
+                for doc_data in seen_documents.values()
+            ]
         
         # Sort all results by score (highest first)
         all_results.sort(key=lambda x: x.score, reverse=True)
