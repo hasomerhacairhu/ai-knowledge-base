@@ -440,7 +440,7 @@ async def health_check():
     }
 
 
-@app.get("/file/{sha256}")
+@app.get("/api/file/{sha256}")
 async def download_file(sha256: str):
     """
     Proxy endpoint for downloading original files
@@ -460,7 +460,7 @@ async def download_file(sha256: str):
     return RedirectResponse(url=url)
 
 
-@app.get("/text/{sha256}")
+@app.get("/api/text/{sha256}")
 async def download_text(sha256: str):
     """
     Proxy endpoint for downloading processed text files
