@@ -241,6 +241,7 @@ def generate_presigned_url(sha256: str, file_type: str = "original") -> Optional
     """
     conn = None
     try:
+        logger.info(f"Generating presigned URL for {sha256[:16]}... (type: {file_type})")
         conn = db_pool.getconn()
         cursor = conn.cursor()
         
@@ -249,6 +250,7 @@ def generate_presigned_url(sha256: str, file_type: str = "original") -> Optional
         ''', (sha256,))
         
         result = cursor.fetchone()
+        logger.info(f"Database query result for {sha256[:16]}...: {result}")
         
         if result:
             s3_key = result[0]
@@ -259,6 +261,8 @@ def generate_presigned_url(sha256: str, file_type: str = "original") -> Optional
                 shard2 = sha256[2:4]
                 s3_key = f"derivatives/{shard1}/{shard2}/{sha256}/text.txt"
             
+            logger.info(f"Using S3 key: {s3_key}")
+            
             # Generate presigned URL (7 days = 604800 seconds)
             url = s3_client.generate_presigned_url(
                 'get_object',
@@ -268,12 +272,14 @@ def generate_presigned_url(sha256: str, file_type: str = "original") -> Optional
                 },
                 ExpiresIn=604800
             )
+            logger.info(f"✓ Generated presigned URL for {sha256[:16]}...")
             return url
         
+        logger.warning(f"No database record found for {sha256[:16]}...")
         return None
         
     except Exception as e:
-        logger.error(f"⚠️  Error generating presigned URL for {sha256}: {e}")
+        logger.error(f"⚠️  Error generating presigned URL for {sha256[:16]}...: {e}")
         return None
     finally:
         if conn:
@@ -445,9 +451,12 @@ async def download_file(sha256: str):
     Returns:
         Redirect to presigned S3 URL
     """
+    logger.info(f"File download request for sha256: {sha256[:16]}...")
     url = generate_presigned_url(sha256, file_type="original")
     if not url:
+        logger.error(f"File not found in database: {sha256[:16]}...")
         raise HTTPException(status_code=404, detail="File not found")
+    logger.info(f"Redirecting to S3 URL for {sha256[:16]}...")
     return RedirectResponse(url=url)
 
 
@@ -462,9 +471,12 @@ async def download_text(sha256: str):
     Returns:
         Redirect to presigned S3 URL
     """
+    logger.info(f"Text download request for sha256: {sha256[:16]}...")
     url = generate_presigned_url(sha256, file_type="text")
     if not url:
+        logger.error(f"Text file not found in database: {sha256[:16]}...")
         raise HTTPException(status_code=404, detail="Text file not found")
+    logger.info(f"Redirecting to S3 URL for text {sha256[:16]}...")
     return RedirectResponse(url=url)
 
 
