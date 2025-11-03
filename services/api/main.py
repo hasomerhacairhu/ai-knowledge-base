@@ -64,6 +64,10 @@ class SearchResponse(BaseModel):
     query: str
     results: List[SearchResult]
     count: int
+    total: Optional[int] = None
+    page: Optional[int] = None
+    page_size: Optional[int] = None
+    has_more: Optional[bool] = None
 
 
 # Global clients
@@ -586,41 +590,13 @@ async def search(request: SearchRequest):
         # Build query string for response
         query_string = " | ".join(queries) if len(queries) > 1 else queries[0]
         
-        # Trim results to fit within 100KB limit
-        max_size_bytes = 100 * 1024  # 100KB
-        trimmed_results = []
+        logger.info(f"Search completed: {len(all_results)} results found from {len(queries)} queries")
         
-        for result in all_results:
-            # Build test response with current results + new result
-            test_response = SearchResponse(
-                query=query_string,
-                results=trimmed_results + [result],
-                count=len(trimmed_results) + 1
-            )
-            
-            # Check size
-            response_json = test_response.model_dump_json()
-            size_bytes = len(response_json.encode('utf-8'))
-            
-            if size_bytes > max_size_bytes:
-                logger.warning(f"Response size limit reached: {size_bytes} bytes > {max_size_bytes} bytes. Returning {len(trimmed_results)} results.")
-                break
-            
-            trimmed_results.append(result)
-        
-        logger.info(f"Search completed: {len(trimmed_results)} results returned (original: {len(all_results)})")
-        
-        final_response = SearchResponse(
+        return SearchResponse(
             query=query_string,
-            results=trimmed_results,
-            count=len(trimmed_results)
+            results=all_results,
+            count=len(all_results)
         )
-        
-        # Log final size
-        final_size = len(final_response.model_dump_json().encode('utf-8'))
-        logger.info(f"Final response size: {final_size / 1024:.2f} KB")
-        
-        return final_response
         
     except httpx.HTTPStatusError as e:
         logger.error(f"OpenAI API error: {e.response.status_code} - {e.response.text}")
@@ -640,10 +616,12 @@ async def search_get(
     qen2: Optional[str] = Query(None, description="Additional English search query 2"),
     qen3: Optional[str] = Query(None, description="Additional English search query 3"),
     rewrite: bool = Query(True, description="Rewrite query for search"),
-    merge_results: bool = Query(True, description="Merge and deduplicate results")
+    merge_results: bool = Query(True, description="Merge and deduplicate results"),
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(20, ge=1, le=50, description="Results per page (max 50)")
 ):
     """
-    GET endpoint for search (convenience method)
+    GET endpoint for search with pagination
     
     Args:
         qhu: Hungarian search query (optional)
@@ -651,14 +629,15 @@ async def search_get(
         qen2, qen3: Additional English search queries (optional)
         rewrite: Whether to rewrite the query
         merge_results: Merge and deduplicate results from multiple queries
+        page: Page number (1-indexed)
+        page_size: Number of results per page (1-50)
         
     Returns:
-        SearchResponse with enriched results
+        SearchResponse with paginated results
         
     Examples:
-        /api/search?qen=Holocaust education
-        /api/search?qen=Holocaust education&qhu=Holokauszt oktatás
-        /api/search?qhu=vezetés&qen=leadership&qen2=organizational culture
+        /api/search?qen=Holocaust education&page=1&page_size=10
+        /api/search?qen=Holocaust education&qhu=Holokauszt oktatás&page=2&page_size=20
     """
     # Collect all non-None queries
     queries = []
@@ -680,7 +659,27 @@ async def search_get(
         merge_results=merge_results,
         rewrite_query=rewrite
     )
-    return await search(request)
+    
+    # Get full results
+    full_response = await search(request)
+    
+    # Apply pagination
+    total = len(full_response.results)
+    start_idx = (page - 1) * page_size
+    end_idx = start_idx + page_size
+    
+    paginated_results = full_response.results[start_idx:end_idx]
+    has_more = end_idx < total
+    
+    return SearchResponse(
+        query=full_response.query,
+        results=paginated_results,
+        count=len(paginated_results),
+        total=total,
+        page=page,
+        page_size=page_size,
+        has_more=has_more
+    )
 
 
 if __name__ == "__main__":

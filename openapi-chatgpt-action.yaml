@@ -12,13 +12,15 @@ info:
     - Semantic search using vector embeddings
     - Automatic chunk merging from same documents
     - Result deduplication
-    - Redis caching for improved performance
-    - Response size limited to 100KB for optimal performance
+    - Pagination support (default 20 results per page)
+    - Redis caching for improved performance (instant page navigation)
     
     **Usage Notes:**
     - Both `qhu` (Hungarian) and `qen` (English) parameters are required
     - Results automatically deduplicated and sorted by relevance score
     - Short proxy URLs provided for file downloads
+    - Use `page` and `page_size` parameters for pagination
+    - After first request, all pages are cached for instant access
 
 servers:
   - url: https://api.z10n.dev
@@ -29,7 +31,16 @@ paths:
     get:
       operationId: searchKnowledgeBase
       summary: Search the knowledge base for relevant documents in Hungarian and English
-      description: Performs semantic bilingual search using `qhu` and `qen` to retrieve merged and deduplicated document results.
+      description: >
+        Performs semantic bilingual search using `qhu` and `qen` to retrieve merged and 
+        deduplicated document results. Results are paginated for optimal performance.
+        
+        **Pagination:**
+        - Default: 20 results per page
+        - Use `page` parameter to navigate through results
+        - Check `has_more` field to see if more pages exist
+        - All pages are cached after first request (instant subsequent access)
+        
       parameters:
         - name: qhu
           in: query
@@ -54,6 +65,29 @@ paths:
             minLength: 2
             maxLength: 500
             example: "scouting and leadership"
+        
+        - name: page
+          in: query
+          required: false
+          description: >
+            Page number for pagination (1-indexed). Default is 1.
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+            example: 1
+        
+        - name: page_size
+          in: query
+          required: false
+          description: >
+            Number of results per page (1-50). Default is 20.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+            example: 20
 
       responses:
         '200':
@@ -64,10 +98,14 @@ paths:
                 $ref: '#/components/schemas/SearchResponse'
               examples:
                 bilingual_search:
-                  summary: Bilingual search with merged results
+                  summary: Bilingual search with merged and paginated results
                   value:
                     query: "cserkészet | scouting"
-                    count: 64
+                    count: 20
+                    total: 64
+                    page: 1
+                    page_size: 20
+                    has_more: true
                     results:
                       - score: 0.8957
                         content:
@@ -114,21 +152,52 @@ components:
           type: string
           description: >
             Combined query string showing all queries used. Multiple queries are joined with " | ".
-          example: "vezetés | leadership | organizational culture"
+          example: "vezetés | leadership"
 
         count:
           type: integer
           format: int32
           description: >
-            Total number of unique documents returned after deduplication and merging.
+            Number of results in current page.
           minimum: 0
-          example: 42
+          example: 20
+        
+        total:
+          type: integer
+          format: int32
+          description: >
+            Total number of results across all pages (after deduplication).
+          minimum: 0
+          example: 64
+        
+        page:
+          type: integer
+          format: int32
+          description: >
+            Current page number (1-indexed).
+          minimum: 1
+          example: 1
+        
+        page_size:
+          type: integer
+          format: int32
+          description: >
+            Number of results per page.
+          minimum: 1
+          maximum: 50
+          example: 20
+        
+        has_more:
+          type: boolean
+          description: >
+            Whether more pages of results are available.
+          example: true
 
         results:
           type: array
           description: >
-            Array of search results, sorted by relevance score (highest first). Each result contains 
-            content chunks and metadata about the source document.
+            Array of search results for current page, sorted by relevance score (highest first). 
+            Each result contains content chunks and metadata about the source document.
           items:
             $ref: '#/components/schemas/SearchResult'
 
