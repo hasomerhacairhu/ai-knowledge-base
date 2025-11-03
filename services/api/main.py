@@ -34,9 +34,7 @@ logger = logging.getLogger(__name__)
 # Request/Response Models
 class SearchRequest(BaseModel):
     query: Union[str, List[str]] = Field(..., description="Search query or list of queries to merge results")
-    max_results: int = Field(10, ge=1, le=50, description="Maximum number of results to return per query")
     rewrite_query: bool = Field(True, description="Whether to rewrite the query for better search results")
-    multilingual: bool = Field(True, description="Enable multilingual search (searches in both Hungarian and English)")
     merge_results: bool = Field(True, description="Merge and deduplicate results from multiple queries")
 
 
@@ -312,7 +310,7 @@ async def search(request: SearchRequest):
         # Convert single query to list for uniform processing
         queries = [request.query] if isinstance(request.query, str) else request.query
         
-        logger.info(f"Search request: {len(queries)} queries, max_results={request.max_results}, multilingual={request.multilingual}")
+        logger.info(f"Search request: {len(queries)} queries, merge_results={request.merge_results}")
         
         all_results = []
         seen_documents = {}  # Track seen documents: sha256 -> {score, content_chunks, metadata}
@@ -321,18 +319,10 @@ async def search(request: SearchRequest):
         for query_text in queries:
             logger.info(f"Processing query: '{query_text[:100]}'")
             
-            # Build search query (with multilingual support if enabled)
-            search_query = query_text
-            if request.multilingual:
-                # Enhance query to work across Hungarian and English
-                search_query = f"{query_text}"
-                logger.info(f"Multilingual search enabled for query: '{search_query[:100]}'")
-            
-            # Perform vector store search
-            # Each query should return max_results to ensure we get enough per language
+            # Perform vector store search - always fetch maximum (50) results
             raw_results = await vector_store_search(
-                query=search_query,
-                max_num_results=request.max_results,
+                query=query_text,
+                max_num_results=50,
                 rewrite_query=request.rewrite_query
             )
             
@@ -405,12 +395,6 @@ async def search(request: SearchRequest):
         # Sort all results by score (highest first)
         all_results.sort(key=lambda x: x.score, reverse=True)
         
-        # Don't limit results when merging multiple queries - we want max_results per query
-        # Only limit for single query or when merge_results is False
-        if not request.merge_results or len(queries) == 1:
-            if len(all_results) > request.max_results:
-                all_results = all_results[:request.max_results]
-        
         # Build query string for response
         query_string = " | ".join(queries) if len(queries) > 1 else queries[0]
         
@@ -439,9 +423,7 @@ async def search_get(
     qen: Optional[str] = Query(None, description="English search query"),
     qen2: Optional[str] = Query(None, description="Additional English search query 2"),
     qen3: Optional[str] = Query(None, description="Additional English search query 3"),
-    max_results: int = Query(10, ge=1, le=50, description="Maximum results"),
     rewrite: bool = Query(True, description="Rewrite query for search"),
-    multilingual: bool = Query(True, description="Enable multilingual search"),
     merge_results: bool = Query(True, description="Merge and deduplicate results")
 ):
     """
@@ -451,18 +433,16 @@ async def search_get(
         qhu: Hungarian search query (optional)
         qen: English search query (optional)
         qen2, qen3: Additional English search queries (optional)
-        max_results: Maximum number of results
         rewrite: Whether to rewrite the query
-        multilingual: Enable multilingual search (searches in both languages)
         merge_results: Merge and deduplicate results from multiple queries
         
     Returns:
         SearchResponse with enriched results
         
     Examples:
-        /api/search?qen=Holocaust education&max_results=5
-        /api/search?qen=Holocaust education&qhu=Holokauszt oktatás&max_results=10
-        /api/search?qhu=vezetés&qen=leadership&qen2=organizational culture&max_results=15
+        /api/search?qen=Holocaust education
+        /api/search?qen=Holocaust education&qhu=Holokauszt oktatás
+        /api/search?qhu=vezetés&qen=leadership&qen2=organizational culture
     """
     # Collect all non-None queries
     queries = []
@@ -481,8 +461,6 @@ async def search_get(
     
     request = SearchRequest(
         query=queries if len(queries) > 1 else queries[0],
-        max_results=max_results,
-        multilingual=multilingual,
         merge_results=merge_results,
         rewrite_query=rewrite
     )
