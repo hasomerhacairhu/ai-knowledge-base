@@ -329,9 +329,10 @@ async def search(request: SearchRequest):
                 logger.info(f"Multilingual search enabled for query: '{search_query[:100]}'")
             
             # Perform vector store search
+            # Each query should return max_results to ensure we get enough per language
             raw_results = await vector_store_search(
                 query=search_query,
-                max_num_results=request.max_results * 2 if request.multilingual else request.max_results,
+                max_num_results=request.max_results,
                 rewrite_query=request.rewrite_query
             )
             
@@ -404,9 +405,11 @@ async def search(request: SearchRequest):
         # Sort all results by score (highest first)
         all_results.sort(key=lambda x: x.score, reverse=True)
         
-        # Limit to requested count
-        if len(all_results) > request.max_results:
-            all_results = all_results[:request.max_results]
+        # Don't limit results when merging multiple queries - we want max_results per query
+        # Only limit for single query or when merge_results is False
+        if not request.merge_results or len(queries) == 1:
+            if len(all_results) > request.max_results:
+                all_results = all_results[:request.max_results]
         
         # Build query string for response
         query_string = " | ".join(queries) if len(queries) > 1 else queries[0]
