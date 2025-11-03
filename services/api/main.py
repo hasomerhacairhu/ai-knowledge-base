@@ -592,49 +592,86 @@ async def get_context(
     normalized_snippet = ' '.join(snippet.split())
     normalized_text = ' '.join(full_text.split())
     
-    # Try exact match first
-    match_pos = normalized_text.lower().find(normalized_snippet.lower())
+    # Try exact match first in normalized text
+    match_pos_normalized = normalized_text.lower().find(normalized_snippet.lower())
     
-    if match_pos == -1:
+    if match_pos_normalized == -1:
         # Try fuzzy matching - split into words and find sequence
         snippet_words = normalized_snippet.lower().split()
         if len(snippet_words) >= 3:
             # Try matching first 3 words
             search_pattern = ' '.join(snippet_words[:3])
-            match_pos = normalized_text.lower().find(search_pattern)
+            match_pos_normalized = normalized_text.lower().find(search_pattern)
     
-    if match_pos == -1:
+    if match_pos_normalized == -1:
         logger.warning(f"Snippet not found in document {sha256[:16]}")
         raise HTTPException(
             status_code=404, 
             detail="Snippet not found in document. Try a longer or more distinctive text excerpt."
         )
     
-    # Map position back to original text (approximate)
-    # This is a simple approach - for production you might want more sophisticated alignment
-    chars_before_match = len(' '.join(full_text[:match_pos].split()))
+    # Now find the actual position in the original text
+    # We'll search for the snippet directly in the original text around the approximate location
+    # Build a search window around the normalized position
+    words_before_match = normalized_text[:match_pos_normalized].count(' ')
+    
+    # Find the same word position in original text
+    word_count = 0
+    char_pos = 0
+    for i, char in enumerate(full_text):
+        if char.isspace() and i > 0 and not full_text[i-1].isspace():
+            word_count += 1
+        if word_count >= words_before_match:
+            char_pos = i
+            break
+    
+    # Search for the snippet in a window around this position
+    search_start = max(0, char_pos - 500)
+    search_end = min(len(full_text), char_pos + len(snippet) + 500)
+    search_window = full_text[search_start:search_end]
+    
+    # Find snippet in the search window (case-insensitive)
+    snippet_lower = snippet.lower()
+    window_lower = search_window.lower()
+    local_match = window_lower.find(snippet_lower)
+    
+    if local_match == -1:
+        # Fallback: try to find any part of the snippet
+        for i in range(len(snippet_lower) - 10, 10, -1):
+            partial = snippet_lower[:i]
+            local_match = window_lower.find(partial)
+            if local_match != -1:
+                break
+    
+    if local_match == -1:
+        # Last resort: use the word-based position
+        match_position = char_pos
+        actual_matched_text = full_text[match_position:match_position + len(snippet)]
+    else:
+        match_position = search_start + local_match
+        # Extract the actual matched text from original (preserve case and formatting)
+        actual_matched_text = full_text[match_position:match_position + len(snippet)]
     
     # Extract context
-    start_pos = max(0, chars_before_match - context_chars)
-    end_pos = min(len(full_text), chars_before_match + len(snippet) + context_chars)
+    start_pos = max(0, match_position - context_chars)
+    end_pos = min(len(full_text), match_position + len(snippet) + context_chars)
     
-    context_before = full_text[start_pos:chars_before_match]
-    matched_text = full_text[chars_before_match:chars_before_match + len(snippet)]
-    context_after = full_text[chars_before_match + len(snippet):end_pos]
+    context_before = full_text[start_pos:match_position]
+    context_after = full_text[match_position + len(snippet):end_pos]
     
     logger.info(
         f"Context extracted: {len(context_before)} chars before, "
-        f"{len(matched_text)} chars match, {len(context_after)} chars after"
+        f"{len(actual_matched_text)} chars match, {len(context_after)} chars after"
     )
     
     return ContextExpansionResponse(
         sha256=sha256,
         original_name=original_name,
-        matched_text=matched_text,
+        matched_text=actual_matched_text,
         context_before=context_before,
         context_after=context_after,
-        context_length=len(context_before) + len(matched_text) + len(context_after),
-        match_position=chars_before_match,
+        context_length=len(context_before) + len(actual_matched_text) + len(context_after),
+        match_position=match_position,
         total_document_length=len(full_text)
     )
 
