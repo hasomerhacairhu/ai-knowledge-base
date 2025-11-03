@@ -37,9 +37,8 @@ logger = logging.getLogger(__name__)
 
 # Request/Response Models
 class SearchRequest(BaseModel):
-    query: Union[str, List[str]] = Field(..., description="Search query or list of queries to merge results")
+    query: Union[str, List[str]] = Field(..., description="Search query or list of queries")
     rewrite_query: bool = Field(True, description="Whether to rewrite the query for better search results")
-    merge_results: bool = Field(True, description="Merge and deduplicate results from multiple queries")
 
 
 class ContentItem(BaseModel):
@@ -493,7 +492,7 @@ async def search(request: SearchRequest):
         request: SearchRequest with query and parameters
         
     Returns:
-        SearchResponse with enriched results (limited to 100KB)
+        SearchResponse with enriched results
     """
     try:
         # Get base URL for file proxies
@@ -502,10 +501,9 @@ async def search(request: SearchRequest):
         # Convert single query to list for uniform processing
         queries = [request.query] if isinstance(request.query, str) else request.query
         
-        logger.info(f"Search request: {len(queries)} queries, merge_results={request.merge_results}")
+        logger.info(f"Search request: {len(queries)} queries")
         
         all_results = []
-        seen_documents = {}  # Track seen documents: sha256 -> {score, content_chunks, metadata}
         
         # Execute search for each query
         for query_text in queries:
@@ -539,50 +537,12 @@ async def search(request: SearchRequest):
                             text=content_item.get('text', '')
                         ))
                 
-                current_score = item.get('score', 0.0)
-                
-                # Merge chunks from same document
-                if request.merge_results:
-                    if sha256_hash in seen_documents:
-                        # Document already seen - merge chunks and keep highest score
-                        doc_data = seen_documents[sha256_hash]
-                        
-                        # Merge content chunks (avoid duplicate chunks)
-                        existing_texts = {c.text for c in doc_data['content']}
-                        for chunk in content:
-                            if chunk.text not in existing_texts:
-                                doc_data['content'].append(chunk)
-                                logger.info(f"Merged new chunk for document {sha256_hash[:8]}... (total chunks: {len(doc_data['content'])})")
-                        
-                        # Keep highest score
-                        if current_score > doc_data['score']:
-                            doc_data['score'] = current_score
-                            logger.info(f"Updated document {sha256_hash[:8]}... with higher score: {current_score:.4f}")
-                    else:
-                        # First time seeing this document
-                        seen_documents[sha256_hash] = {
-                            'score': current_score,
-                            'content': content,
-                            'metadata': metadata
-                        }
-                else:
-                    # No deduplication - add all results
-                    all_results.append(SearchResult(
-                        score=current_score,
-                        content=content,
-                        metadata=metadata
-                    ))
-        
-        # Convert deduplicated results to list if merge_results was enabled
-        if request.merge_results:
-            all_results = [
-                SearchResult(
-                    score=doc_data['score'],
-                    content=doc_data['content'],
-                    metadata=doc_data['metadata']
-                )
-                for doc_data in seen_documents.values()
-            ]
+                # Add each chunk as a separate result
+                all_results.append(SearchResult(
+                    score=item.get('score', 0.0),
+                    content=content,
+                    metadata=metadata
+                ))
         
         # Sort all results by score (highest first)
         all_results.sort(key=lambda x: x.score, reverse=True)
@@ -632,7 +592,6 @@ async def search_get(
     # Both queries required
     request = SearchRequest(
         query=[qhu, qen],
-        merge_results=True,
         rewrite_query=True
     )
     
