@@ -520,9 +520,12 @@ async def search(request: SearchRequest):
             for item in raw_results.get('data', []):
                 # Extract SHA256 from filename
                 filename = item.get('filename', '')
+                logger.info(f"Processing result with filename: {filename}")
+                
                 sha256_hash = filename.replace('.txt', '') if filename.endswith('.txt') else None
                 
                 if not sha256_hash:
+                    logger.warning(f"Skipping result - filename doesn't end with .txt: {filename}")
                     continue
                 
                 # Get metadata from database with short proxy URLs
