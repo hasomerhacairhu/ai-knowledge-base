@@ -248,11 +248,13 @@ This project provides multiple Docker Compose configurations for different deplo
 - `docker-compose-local-builld.yml` - **Explicit**: Local builds (same as default)
 
 ### 🏭 Production Deployment (Recommended)
-Uses pre-built images from GitHub Container Registry, automatically built via GitHub Actions:
+Uses pre-built images from GitHub Container Registry, automatically built via optimized GitHub Actions:
 ```bash
 # Use pre-built images (fastest startup)
 docker-compose -f docker-compose-from-registry.yml up -d
 ```
+
+> 🔧 **CI Optimization**: Images are built only when relevant code changes. See [CI_OPTIMIZATION_GUIDE.md](./CI_OPTIMIZATION_GUIDE.md)
 
 **Available Images:**
 - `ghcr.io/hasomerhacairhu/ai-knowledge-base/api:latest` - REST API service

@@ -3,8 +3,18 @@ name: Build and Push Docker Images
 on:
   push:
     branches: [ main, develop ]
+    paths:
+      - 'services/**'
+      - 'docker-compose.dev.yml'
+      - 'Dockerfile*'
+      - '.github/workflows/docker-build.yml'
   pull_request:
     branches: [ main ]
+    paths:
+      - 'services/**'
+      - 'docker-compose.dev.yml'
+      - 'Dockerfile*'
+      - '.github/workflows/docker-build.yml'
   release:
     types: [ published ]
   workflow_dispatch:
@@ -14,15 +24,45 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.changes.outputs.api }}
+      ingest: ${{ steps.changes.outputs.ingest }}
+      docker: ${{ steps.changes.outputs.docker }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dorny/paths-filter@v3
+      id: changes
+      with:
+        filters: |
+          api:
+            - 'services/api/**'
+          ingest:
+            - 'services/ingest/**'
+          docker:
+            - 'docker-compose.dev.yml'
+            - 'Dockerfile*'
+            - '.github/workflows/docker-build.yml'
+
   build-and-push:
     runs-on: ubuntu-latest
+    needs: changes
     strategy:
       matrix:
         service: [api, ingest]
+        include:
+          - service: api
+            changed: ${{ needs.changes.outputs.api }}
+          - service: ingest
+            changed: ${{ needs.changes.outputs.ingest }}
     
     permissions:
       contents: read
       packages: write
+      
+    # Only run if the specific service changed OR docker files changed OR manual trigger
+    if: matrix.changed == 'true' || needs.changes.outputs.docker == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'release'
       
     steps:
     - name: Checkout repository
