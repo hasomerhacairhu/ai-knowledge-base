@@ -51,18 +51,13 @@ jobs:
     strategy:
       matrix:
         service: [api, ingest]
-        include:
-          - service: api
-            changed: ${{ needs.changes.outputs.api }}
-          - service: ingest
-            changed: ${{ needs.changes.outputs.ingest }}
     
     permissions:
       contents: read
       packages: write
       
     # Only run if the specific service changed OR docker files changed OR manual trigger
-    if: matrix.changed == 'true' || needs.changes.outputs.docker == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'release'
+    if: (matrix.service == 'api' && needs.changes.outputs.api == 'true') || (matrix.service == 'ingest' && needs.changes.outputs.ingest == 'true') || needs.changes.outputs.docker == 'true' || github.event_name == 'workflow_dispatch' || github.event_name == 'release'
       
     steps:
     - name: Checkout repository
