@@ -1,18 +1,41 @@
 # Cloudflare Tunnel Setup for AI Knowledge Base API
 
-## ✅ Completed Steps
+## 🔄 Updated Configuration
 
-1. **Network Configuration**: The API container (`ai-kb-api`) is now connected to both:
-   - `ai-knowledge-base-ingest_ai-kb-network` (internal network with PostgreSQL)
-   - `apps` (shared network with cloudflared)
+The registry compose file has been updated to:
 
-2. **Container Status**: 
-   - API is running and healthy
-   - Accessible internally at `http://ai-kb-api:8000`
+1. **Removed External Apps Network**: No longer depends on external `apps` network
+2. **Added Cloudflare Tunnel Service**: Integrated `cloudflared` container  
+3. **Internal Network Only**: API uses only `ai-kb-network` for internal communication
+4. **Profile-based Deployment**: Use `--profile tunnel` to enable Cloudflare Tunnel
 
-## 🔧 Next Steps: Configure Cloudflare Tunnel
+## ✅ New Architecture
 
-Your cloudflared container is running with a tunnel token. To expose the API through Cloudflare Tunnel, you need to:
+- **API Container**: Accessible internally at `http://api:8000` within `ai-kb-network`
+- **Cloudflare Tunnel**: Routes external traffic to internal API service
+- **No External Networks**: Self-contained deployment
+
+## 🔧 Environment Setup
+
+Before deploying with Cloudflare Tunnel, configure your environment variables:
+
+```bash
+# Copy the example file
+cp .env.example .env
+
+# Edit the .env file with your values
+# Required for Cloudflare Tunnel:
+CLOUDFLARE_TUNNEL_TOKEN=your_cloudflare_tunnel_token_here
+API_BASE_URL=https://api.yourdomain.com/api
+
+# Other required variables...
+OPENAI_API_KEY=sk-proj-...
+# ... etc
+```
+
+## 🔧 Configure Cloudflare Tunnel
+
+To expose the API through Cloudflare Tunnel:
 
 ### Option 1: Via Cloudflare Dashboard (Recommended)
 
@@ -37,38 +60,33 @@ Your cloudflared container is running with a tunnel token. To expose the API thr
    curl https://ai-kb-api.yourdomain.com/health
    ```
 
-### Option 2: Via Configuration File
+### Option 2: Integrated Compose Deployment (New)
 
-If you prefer to manage via config file, create a config on the host:
+The registry compose file now includes Cloudflare Tunnel as a service:
 
-1. **Create config file**:
+1. **Set Environment Variable**:
    ```bash
-   ssh root@100.106.229.15
-   mkdir -p /root/cloudflared
-   cat > /root/cloudflared/config.yml << 'EOF'
-   tunnel: <your-tunnel-id>
-   credentials-file: /etc/cloudflared/credentials.json
-
-   ingress:
-     - hostname: ai-kb-api.yourdomain.com
-       service: http://ai-kb-api:8000
-     - service: http_status:404
-   EOF
+   # Add to your .env file
+   echo "CLOUDFLARE_TUNNEL_TOKEN=your_tunnel_token_here" >> .env
    ```
 
-2. **Update cloudflared container** to use the config:
+2. **Deploy with Tunnel**:
    ```bash
-   docker stop cloudflared
-   docker rm cloudflared
+   # Start registry services with Cloudflare Tunnel
+   docker-compose -f docker-compose.from-registry.yml --profile tunnel up -d
    
-   docker run -d \
-     --name cloudflared \
-     --network apps \
-     --restart unless-stopped \
-     -v /root/cloudflared:/etc/cloudflared \
-     cloudflare/cloudflared:latest \
-     tunnel --config /etc/cloudflared/config.yml run
+   # Check tunnel status
+   docker logs ai-kb-cloudflared
    ```
+
+3. **Configure Public Hostname** (via Cloudflare Dashboard):
+   - Go to Zero Trust Dashboard → Networks → Tunnels
+   - Select your tunnel → Public Hostnames → Add hostname
+   - Set service URL to: `http://api:8000` (internal container name)
+
+### Option 3: Manual Container (Legacy)
+
+For existing deployments, you can still use manual containers, but the compose approach is recommended.
 
 ## 🧪 Testing
 
@@ -97,13 +115,24 @@ curl -X POST https://ai-kb-api.yourdomain.com/api/search \
 
 3. **API Keys**: Add authentication to your FastAPI app if needed
 
-## 📊 Current Configuration
+## 📊 Updated Configuration
 
-- **API Internal URL**: `http://ai-kb-api:8000`
-- **API Container**: `ai-kb-api`
-- **Cloudflared Container**: `cloudflared`
-- **Shared Network**: `apps`
-- **API Port**: 8000 (also exposed on host as 8001)
+### Registry Compose Deployment:
+- **API Internal URL**: `http://api:8000` (within `ai-kb-network`)
+- **API Container**: `ai-kb-api`  
+- **Cloudflared Container**: `ai-kb-cloudflared`
+- **Network**: `ai-kb-network` (internal only)
+- **External Access**: Via Cloudflare Tunnel only
+- **Profiles**: Use `--profile tunnel` to enable tunnel service
+
+### Deployment Commands:
+```bash
+# Production with tunnel
+docker-compose -f docker-compose.from-registry.yml --profile tunnel up -d
+
+# Local development (no tunnel)  
+docker-compose -f docker-compose.from-registry.yml up -d
+```
 
 ## 🔍 Troubleshooting
 

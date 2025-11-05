@@ -33,7 +33,7 @@ This guide covers deploying and managing the AI Knowledge Base stack in Portaine
    POSTGRES_PORT=5432
    
    # Google Drive
-   GOOGLE_SERVICE_ACCOUNT_FILE=./somer-services-458421-ee757e0c4238.json
+   GOOGLE_SERVICE_ACCOUNT_FILE=./google-service-account.json
    GOOGLE_DRIVE_FOLDER_ID=your-folder-id
    
    # S3 Storage
@@ -172,7 +172,7 @@ curl -X POST "${PORTAINER_URL}/api/endpoints/${ENDPOINT_ID}/docker/containers/cr
     "NetworkMode": "ai-knowledge-base_ai-kb-network",
     "Binds": [
       "ai-knowledge-base_shared_data:/app/data",
-      "${PWD}/somer-services-458421-ee757e0c4238.json:/app/service-account.json:ro"
+      "${PWD}/google-service-account.json:/app/service-account.json:ro"
     ],
     "RestartPolicy": {
       "Name": "no"

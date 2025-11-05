@@ -7,6 +7,8 @@ help:
 	@echo "  make build          - Build all Docker images (local builds)"
 	@echo "  make up             - Start all services (local builds, default)"
 	@echo "  make up-registry    - Start services with pre-built registry images (fastest)"
+	@echo "  make up-tunnel      - Start registry services with Cloudflare Tunnel"
+
 	@echo "  make up-local       - Start services with local builds (explicit)"
 	@echo "  make down           - Stop all services"
 	@echo ""
@@ -42,6 +44,11 @@ up:
 up-registry:
 	docker-compose -f docker-compose-from-registry.yml up -d
 	@echo "Services started with registry images. API available at http://localhost:8000"
+
+up-tunnel:
+	docker-compose -f docker-compose-from-registry.yml --profile tunnel up -d
+	@echo "Services started with Cloudflare Tunnel. API available via tunnel and http://localhost:8000"
+
 
 up-local:
 	docker-compose -f docker-compose-local-builld.yml up -d --build

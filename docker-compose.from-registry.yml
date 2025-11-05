@@ -55,7 +55,7 @@ services:
       GOOGLE_SERVICE_ACCOUNT_FILE: /app/service-account.json
       PATH: /app/.venv/bin:$PATH
     volumes:
-      - ${GOOGLE_SERVICE_ACCOUNT_FILE:-./somer-services-458421-ee757e0c4238.json}:/app/service-account.json:ro
+      - ${GOOGLE_SERVICE_ACCOUNT_FILE:-./google-service-account.json}:/app/service-account.json:ro
       - shared_data:/app/data
     depends_on:
       postgres:
@@ -80,7 +80,7 @@ services:
       - .env
     environment:
       API_PORT: 8000
-      API_BASE_URL: https://api.z10n.dev/api
+      API_BASE_URL: ${API_BASE_URL:-http://localhost:8000/api}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-ai_knowledge_base}
@@ -108,7 +108,21 @@ services:
     restart: unless-stopped
     networks:
       - ai-kb-network
-      - apps
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: ai-kb-cloudflared
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    restart: unless-stopped
+    networks:
+      - ai-kb-network
+    depends_on:
+      api:
+        condition: service_healthy
+    profiles:
+      - tunnel
 
   minio:
     image: minio/minio:latest
@@ -146,5 +160,3 @@ volumes:
 networks:
   ai-kb-network:
     driver: bridge
-  apps:
-    external: true

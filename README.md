@@ -162,7 +162,7 @@ Required environment variables:ai-knowledge-base-ingest/└───────
 
 # Google Drive
 
-GOOGLE_SERVICE_ACCOUNT_FILE=./somer-services-458421-ee757e0c4238.json├── Makefile                 # Helper commands         │
+GOOGLE_SERVICE_ACCOUNT_FILE=./google-service-account.json
 
 GOOGLE_DRIVE_FOLDER_ID=your-folder-id
 
@@ -248,13 +248,17 @@ This project provides multiple Docker Compose configurations for different deplo
 - `docker-compose-local-builld.yml` - **Explicit**: Local builds (same as default)
 
 ### 🏭 Production Deployment (Recommended)
-Uses pre-built images from GitHub Container Registry, automatically built via optimized GitHub Actions:
+Uses pre-built images from GitHub Container Registry, with optional Cloudflare Tunnel integration:
 ```bash
-# Use pre-built images (fastest startup)
+# Local access only
 docker-compose -f docker-compose-from-registry.yml up -d
+
+# With Cloudflare Tunnel (external access)
+docker-compose -f docker-compose-from-registry.yml --profile tunnel up -d
 ```
 
-> 🔧 **CI Optimization**: Images are built only when relevant code changes. See [CI_OPTIMIZATION_GUIDE.md](./CI_OPTIMIZATION_GUIDE.md)
+> 🔧 **CI Optimization**: Images are built only when relevant code changes. See [CI_OPTIMIZATION_GUIDE.md](./CI_OPTIMIZATION_GUIDE.md)  
+> 🌐 **Cloudflare Tunnel**: Secure external access without port forwarding. See [CLOUDFLARE_TUNNEL_SETUP.md](./CLOUDFLARE_TUNNEL_SETUP.md)
 
 **Available Images:**
 - `ghcr.io/hasomerhacairhu/ai-knowledge-base/api:latest` - REST API service
@@ -365,7 +369,7 @@ open http://localhost:8000/docsRequired environment variables:## 🏗️ Archite
 
 ### Ingest Service
 
-GOOGLE_SERVICE_ACCOUNT_FILE=./somer-services-458421-ee757e0c4238.json
+GOOGLE_SERVICE_ACCOUNT_FILE=./google-service-account.json
 
 **Purpose**: Batch processing of documents from Drive to Vector Store
 
@@ -769,7 +773,9 @@ console.log(`Found ${data.count} results`);
 
 ```bash
 
-curl -X POST http://localhost:8000/api/search \docker-compose run --rm ingest python main.py process --max-files 10GOOGLE_SERVICE_ACCOUNT_FILE=./somer-services-458421-ee757e0c4238.json### Installation
+GOOGLE_SERVICE_ACCOUNT_FILE=./google-service-account.json
+
+### Installation
 
   -H "Content-Type: application/json" \
 
@@ -1179,7 +1185,7 @@ uv run python main.py sync --max-files 5# Index to OpenAI Vector Store# Individu
 
 # Check file existsdocker-compose run --rm ingest uv run python main.py index --max-files 10uv run python main.py sync              # Sync from Drive to S3
 
-ls -la somer-services-458421-ee757e0c4238.json
+ls -la google-service-account.json
 
 ### Building Images
 
@@ -1601,7 +1607,7 @@ docker-compose exec api env | grep POSTGRES    drive_parent_path TEXT,
 
 # Check file exists```bash);
 
-ls -la somer-services-458421-ee757e0c4238.json
+ls -la google-service-account.json
 
 # Dry run (test without changes)```
 
@@ -2124,7 +2130,9 @@ docker-compose exec api env | grep POSTGRES**Google Drive authentication fails**
 
 # Check file exists# Verify Drive API is enabled
 
-ls -la somer-services-458421-ee757e0c4238.json# Check permissions in Google Cloud Console
+ls -la google-service-account.json
+
+# Check permissions in Google Cloud Console
 
 ```
 
