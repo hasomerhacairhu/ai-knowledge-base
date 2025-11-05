@@ -4,8 +4,10 @@ help:
 	@echo "AI Knowledge Base - Multi-Service Architecture"
 	@echo ""
 	@echo "Available commands:"
-	@echo "  make build          - Build all Docker images"
-	@echo "  make up             - Start all services"
+	@echo "  make build          - Build all Docker images (local builds)"
+	@echo "  make up             - Start all services (local builds, default)"
+	@echo "  make up-registry    - Start services with pre-built registry images"
+	@echo "  make up-local       - Start services with local builds (explicit)"
 	@echo "  make down           - Stop all services"
 	@echo "  make logs           - View logs from all services"
 	@echo "  make restart        - Restart all services"
@@ -30,11 +32,21 @@ build:
 	docker-compose build
 
 up:
-	docker-compose up -d
-	@echo "Services started. API available at http://localhost:8000"
+	docker-compose up -d --build
+	@echo "Services started with local builds. API available at http://localhost:8000"
+
+up-registry:
+	docker-compose -f docker-compose-from-registry.yml up -d
+	@echo "Services started with registry images. API available at http://localhost:8000"
+
+up-local:
+	docker-compose -f docker-compose-local-builld.yml up -d --build
+	@echo "Services started with local builds (explicit). API available at http://localhost:8000"
 
 down:
-	docker-compose down
+	docker-compose down || true
+	docker-compose -f docker-compose-from-registry.yml down || true
+	docker-compose -f docker-compose-local-builld.yml down || true
 
 logs:
 	docker-compose logs -f
@@ -43,7 +55,9 @@ restart:
 	docker-compose restart
 
 clean:
-	docker-compose down -v
+	docker-compose down -v || true
+	docker-compose -f docker-compose-from-registry.yml down -v || true
+	docker-compose -f docker-compose-local-builld.yml down -v || true
 	@echo "All containers and volumes removed"
 
 # Ingestion commands

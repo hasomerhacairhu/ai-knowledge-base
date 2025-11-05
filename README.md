@@ -238,7 +238,44 @@ docker-compose ps         ▼- `QUICK_START.md` - 5-minute setup guide
 
 ```
 
-## 🚀 Quick Start
+## � Docker Images
+
+This project provides multiple Docker Compose configurations for different deployment scenarios:
+
+### 📁 Available Compose Files
+- `docker-compose.yml` - **Default**: Local builds (development/testing)
+- `docker-compose-from-registry.yml` - **Production**: Pre-built images from GitHub Container Registry
+- `docker-compose-local-builld.yml` - **Explicit**: Local builds (same as default)
+
+### 🏭 Production Deployment (Recommended)
+Uses pre-built images from GitHub Container Registry, automatically built via GitHub Actions:
+```bash
+# Use pre-built images (fastest startup)
+docker-compose -f docker-compose-from-registry.yml up -d
+```
+
+**Available Images:**
+- `ghcr.io/hasomerhacairhu/ai-knowledge-base/api:latest` - REST API service
+- `ghcr.io/hasomerhacairhu/ai-knowledge-base/ingest:latest` - Document ingestion pipeline
+
+### 🛠️ Development & Local Builds
+For local development with custom changes:
+```bash
+# Local builds (default behavior)
+docker-compose up -d --build
+
+# Or explicitly use local build file
+docker-compose -f docker-compose-local-builld.yml up -d --build
+```
+
+> 📖 **Detailed deployment guide**: See [DOCKER_COMPOSE_GUIDE.md](./DOCKER_COMPOSE_GUIDE.md) for complete Docker options
+> 
+> 🚀 **Interactive helper**: Use `./docker-helper.sh` (Linux/Mac) or `.\docker-helper.ps1` (Windows) for guided deployment
+
+---
+```
+
+## �🚀 Quick Start
 
 Services will be available at:
 

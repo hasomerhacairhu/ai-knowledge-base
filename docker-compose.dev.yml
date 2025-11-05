@@ -1,0 +1,16 @@
+# Development override for docker-compose.yml
+# Use this for local development with custom builds
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  ingest:
+    build:
+      context: ./services/ingest
+      dockerfile: Dockerfile
+    image: ai-kb-ingest:dev
+
+  api:
+    build:
+      context: ./services/api
+      dockerfile: Dockerfile
+    image: ai-kb-api:dev

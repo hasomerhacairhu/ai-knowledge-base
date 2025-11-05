@@ -1,0 +1,150 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-kb-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ai_knowledge_base}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - ai-kb-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai-kb-redis
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - ai-kb-network
+    volumes:
+      - redis_data:/data
+
+  ingest:
+    # Use pre-built image from GitHub Container Registry
+    # To build locally, uncomment the build section and comment out the image line
+    # build:
+    #   context: ./services/ingest
+    #   dockerfile: Dockerfile
+    image: ghcr.io/hasomerhacairhu/ai-knowledge-base/ingest:latest
+    container_name: ai-kb-ingest
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-ai_knowledge_base}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      GOOGLE_SERVICE_ACCOUNT_FILE: /app/service-account.json
+      PATH: /app/.venv/bin:$PATH
+    volumes:
+      - ${GOOGLE_SERVICE_ACCOUNT_FILE:-./somer-services-458421-ee757e0c4238.json}:/app/service-account.json:ro
+      - shared_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["/app/.venv/bin/python", "main.py", "--help"]
+    restart: "no"
+    networks:
+      - ai-kb-network
+    labels:
+      - "com.portainer.job=true"
+      - "com.portainer.job.schedule=manual"
+
+  api:
+    # Use pre-built image from GitHub Container Registry
+    # To build locally, uncomment the build section and comment out the image line
+    # build:
+    #   context: ./services/api
+    #   dockerfile: Dockerfile
+    image: ghcr.io/hasomerhacairhu/ai-knowledge-base/api:latest
+    container_name: ai-kb-api
+    env_file:
+      - .env
+    environment:
+      API_PORT: 8000
+      API_BASE_URL: https://api.z10n.dev/api
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-ai_knowledge_base}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CACHE_TTL: ${CACHE_TTL:-3600}
+      PATH: /app/.venv/bin:$PATH
+    volumes:
+      - shared_data:/app/data:ro
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import httpx; httpx.get('http://localhost:8000/health', timeout=5.0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - ai-kb-network
+      - apps
+
+  minio:
+    image: minio/minio:latest
+    container_name: ai-kb-minio
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - ai-kb-network
+    profiles:
+      - dev
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  shared_data:
+    driver: local
+  minio_data:
+    driver: local
+
+networks:
+  ai-kb-network:
+    driver: bridge
+  apps:
+    external: true
