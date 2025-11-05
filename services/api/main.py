@@ -745,10 +745,11 @@ async def search(request: SearchRequest):
         all_results.sort(key=lambda x: x.score, reverse=True)
         
         # Apply diversity filter: limit chunks per document to improve variety
+        # This ensures every document has equal chance to appear in results
         if request.merge_results:
             seen_docs = {}
             diverse_results = []
-            max_chunks_per_doc = 3  # Maximum chunks from same document
+            max_chunks_per_doc = 2  # Reduced from 3 to 2 for better document diversity
             
             for result in all_results:
                 if result.metadata:
@@ -762,7 +763,7 @@ async def search(request: SearchRequest):
                     diverse_results.append(result)
             
             all_results = diverse_results
-            logger.info(f"Applied diversity filter: {len(all_results)} results after limiting chunks per document")
+            logger.info(f"Applied diversity filter: {len(all_results)} results from {len(seen_docs)} unique documents (max {max_chunks_per_doc} chunks/doc)")
         
         # Build query string for response
         query_string = " | ".join(queries) if len(queries) > 1 else queries[0]
@@ -816,7 +817,7 @@ async def search_get(
     request = SearchRequest(
         query=[qhu, qen],
         rewrite_query=True,
-        merge_results=True,  # Enable diversity filter
+        merge_results=True,  # Enable diversity filter for better document coverage
         use_hybrid_search=True,  # Enable hybrid search (vector + keyword)
         score_threshold=0.3,  # Filter low-relevance results
         embedding_weight=embedding_weight,
